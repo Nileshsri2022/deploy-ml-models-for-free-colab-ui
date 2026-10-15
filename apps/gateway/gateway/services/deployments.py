@@ -329,9 +329,17 @@ class DeploymentService:
             )
             endpoint = self.registry.endpoints.get(endpoint.id) or endpoint
 
-        # Supersede any previous deployment for this endpoint.
+        # Keep matching deployments on other explicitly selected runtimes as replicas.
         for dep in self.registry.deployments.for_endpoint(endpoint.id):
-            if dep.state in (DeploymentState.PENDING, DeploymentState.LOADING, DeploymentState.READY):
+            if dep.state not in (DeploymentState.PENDING, DeploymentState.LOADING, DeploymentState.READY):
+                continue
+            is_replica = (
+                runtime_id is not None
+                and dep.model_id == base.id
+                and dep.model_version == base.version
+                and dep.runtime_id != runtime_id
+            )
+            if not is_replica:
                 self.registry.store.update(
                     "deployments",
                     dep.id,

@@ -173,8 +173,8 @@ when the VM disappears and comes back.
 | M2 deploy any model (artifacts, auto-detect, adapters, warm-up, versioning) | ✅ |
 | M3 UI (dashboard, connect, deploy wizard, endpoints, playground, SSE) | ✅ |
 | M4 cache & resilience (SWR, degradation modes, job queue, hot-key warm-up, UI offline) | ✅ |
-| M5 multi-runtime & keep-alive (pool, failover, watchdog, relaunch link) | 🟡 partial — several runtimes can attach and serve; failover picks any online VM, but there is no alerting yet |
-| M6 polish & publish (PyPI packages, quotas, demo video) | 🟡 partial — API keys and scopes exist; not on PyPI yet |
+| M5 multi-runtime & keep-alive (pool, failover, watchdog, relaunch link) | 🟡 partial — ready replicas support one automatic retry after a runtime transport failure; watchdog and relaunch link exist, but alerting is not implemented |
+| M6 polish & publish (PyPI packages, quotas, demo video) | 🟡 partial — daily key quotas and build/release workflow are implemented; PyPI trusted-publisher setup and first release, plus recording the demo video, remain |
 
 ## Limitations — please read
 

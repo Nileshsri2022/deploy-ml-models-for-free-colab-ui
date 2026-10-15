@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from colabdeploy_shared.enums import DeploymentState, JobState, RuntimeState
@@ -51,6 +51,25 @@ def _failure_response(exc: InferenceFailure, extra_headers: dict[str, str] | Non
         },
         headers=headers,
     )
+
+
+def _consume_daily_quota(state: Any, principal: Any) -> None:
+    if principal.kind != "api_key":
+        return
+    quota = state.inference_quota.consume(principal.id)
+    if quota["limited"]:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "QUOTA_EXCEEDED",
+                "message": "daily inference request quota exceeded; quota resets at 00:00 UTC",
+            },
+            headers={
+                "Retry-After": str(quota["retry_after"]),
+                "X-ColabDeploy-Quota-Limit": str(quota["limit"]),
+                "X-ColabDeploy-Quota-Remaining": "0",
+            },
+        )
 
 
 def _response_headers(payload: InferenceResponse) -> dict[str, str]:
@@ -90,6 +109,7 @@ async def predict(
     state = app_state(request)
     try:
         resolved = _resolve(state, identifier)
+        _consume_daily_quota(state, principal)
         payload = await state.inference.predict(resolved, body, request_id=x_request_id)
     except InferenceFailure as exc:
         return _failure_response(exc)
@@ -116,6 +136,7 @@ async def predict_batch(
         )
     try:
         resolved = _resolve(state, identifier)
+        _consume_daily_quota(state, principal)
         results = await state.inference.predict_batch(resolved, [i for i in items if isinstance(i, dict)])
     except InferenceFailure as exc:
         return _failure_response(exc)
@@ -199,6 +220,7 @@ async def create_job(
             if body.endpoint_id else _resolve(state, identifier)
     except InferenceFailure as exc:
         return _failure_response(exc)
+    _consume_daily_quota(state, principal)
     job = state.inference.enqueue(resolved, body.inputs, body.webhook_url)
     return JSONResponse(
         status_code=202,

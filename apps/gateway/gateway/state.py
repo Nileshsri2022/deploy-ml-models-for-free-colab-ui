@@ -17,6 +17,7 @@ from gateway.core.repository import Registry
 from gateway.core.store import JsonStore
 from gateway.services.deployments import DeploymentService
 from gateway.services.inference import InferenceService
+from gateway.services.quotas import DailyInferenceQuota
 from gateway.services.relay import Relay
 from gateway.services.runtime_manager import RuntimeManager
 
@@ -27,6 +28,7 @@ class AppState:
         settings.ensure_dirs()
         self.store = JsonStore(settings.data_dir / "store")
         self.registry = Registry(self.store)
+        self.inference_quota = DailyInferenceQuota(self.store, settings.daily_inference_quota)
         self.cache: CacheBackend = build_cache(
             settings.cache_backend,
             data_dir=settings.data_dir,

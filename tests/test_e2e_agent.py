@@ -553,17 +553,69 @@ def test_two_runtimes_can_serve_the_same_model(
         timeout_s=10,
         message="VM A to drop",
     )
-    # The deployment now points at VM B, which is online.
-    api.post("/api/deploy", json={
-        "model_id": result["model"]["id"], "runtime_id": second.runtime_id,
-        "endpoint_id": result["endpoint"]["id"],
-    })
-    wait_until_ready(api, result["endpoint"]["id"], timeout_s=30)
+    # The gateway automatically routes to the surviving ready replica; no redeploy.
     api.post("/api/cache/invalidate", params={"endpoint_id": result["endpoint"]["id"]})
     failover = api.post("/v1/models/pooled/predict", json={"inputs": {"text": "b"}})
     assert failover.status_code == 200, failover.text
     assert failover.json()["runtime_id"] == second.runtime_id
     assert failover.json()["cache"] == "MISS", "served fresh by the surviving VM"
+
+
+def test_prediction_retries_on_a_ready_replica_after_runtime_failure(
+    live: dict[str, Any], api: Any, agent_factory: Any, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A failed runtime is retried once on another already-ready replica."""
+    from gateway.services.relay import RuntimeOffline
+
+    artifact = tmp_path / "automatic-failover.echo.json"
+    artifact.write_text("{}", encoding="utf-8")
+    first = agent_factory(api, "failover-a")
+    second = agent_factory(api, "failover-b")
+    first.connect()
+    result = deploy_echo(api, artifact, name="automatic-failover", runtime_id=first.runtime_id)
+    endpoint_id = result["endpoint"]["id"]
+    wait_until_ready(api, endpoint_id)
+
+    second.connect()
+    api.post("/api/deploy", json={
+        "model_id": result["model"]["id"], "runtime_id": second.runtime_id,
+        "endpoint_id": endpoint_id,
+    })
+    wait_for(
+        lambda: any(
+            dep["endpoint_id"] == endpoint_id
+            and dep["runtime_id"] == second.runtime_id
+            and dep["state"] == "ready"
+            for dep in api.get("/api/deployments").json()["deployments"]
+        ),
+        timeout_s=25,
+        message="the replica to load the model",
+    )
+
+    state = live["state"]
+    preferred = state.runtimes.pick_runtime(
+        endpoint_id, result["model"]["id"], result["model"]["version"]
+    )
+    survivor = second.runtime_id if preferred == first.runtime_id else first.runtime_id
+    original_exec = state.relay.exec_on_runtime
+    failed_once = False
+
+    async def fail_preferred_once(runtime_id: str, *args: Any, **kwargs: Any) -> Any:
+        nonlocal failed_once
+        if runtime_id == preferred and not failed_once:
+            failed_once = True
+            raise RuntimeOffline(runtime_id)
+        return await original_exec(runtime_id, *args, **kwargs)
+
+    monkeypatch.setattr(state.relay, "exec_on_runtime", fail_preferred_once)
+    response = api.post(
+        "/v1/models/automatic-failover/predict", json={"inputs": {"text": "fresh"}}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["cache"] == "MISS"
+    assert response.json()["runtime_id"] == survivor
+    assert failed_once
 
 
 def test_tunnel_recovers_from_a_gateway_restart(

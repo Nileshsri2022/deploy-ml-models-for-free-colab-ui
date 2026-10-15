@@ -306,16 +306,16 @@ class RuntimeManager:
     # ------------------------------------------------------------------ #
     # Runtime selection
     # ------------------------------------------------------------------ #
-    def pick_runtime(self, endpoint_id: str, model_id: str, model_version: int) -> str | None:
-        """Choose a live runtime for a request.
-
-        Preference order:
-        1. the runtime that already has this deployment READY (hottest),
-        2. any connected runtime that reports the model loaded,
-        3. any connected runtime, picked by consistent hash on the endpoint id
-           (stable affinity keeps per-runtime caches warm),
-        4. ``None`` -> the caller applies the endpoint's degradation mode.
-        """
+    def pick_runtime(
+        self,
+        endpoint_id: str,
+        model_id: str,
+        model_version: int,
+        *,
+        exclude_runtime_ids: set[str] | None = None,
+    ) -> str | None:
+        """Choose a live runtime, optionally limiting failover to loaded replicas."""
+        excluded = exclude_runtime_ids or set()
         ready = [
             d
             for d in self.registry.deployments.for_endpoint(endpoint_id)
@@ -323,20 +323,22 @@ class RuntimeManager:
             and d.model_version == model_version
             and d.state == DeploymentState.READY
             and d.runtime_id
+            and d.runtime_id not in excluded
             and self.relay.is_connected(d.runtime_id)
         ]
         if ready:
             return ready[0].runtime_id
 
-        connected = self.relay.connected_runtime_ids
-        if not connected:
-            return None
-
+        connected = [runtime_id for runtime_id in self.relay.connected_runtime_ids if runtime_id not in excluded]
         key = f"{model_id}@{model_version}"
         for runtime_id in connected:
             record = self.registry.store.get("runtimes", runtime_id) or {}
             if key in (record.get("loaded_models") or []):
                 return runtime_id
+
+        # Retrying must never send a model to a connected VM that hasn't loaded it.
+        if excluded or not connected:
+            return None
 
         digest = int(hashlib.sha256(f"{endpoint_id}:{runtime_seed(connected)}".encode()).hexdigest(), 16)
         return connected[digest % len(connected)]

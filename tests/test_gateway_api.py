@@ -276,6 +276,32 @@ def test_endpoint_route_is_slugified_and_unique(api: Any) -> None:
     assert endpoint["route"] == "my-model"
 
 
+def test_daily_inference_quota_counts_cache_hits(api: Any, stub_runtime: Any, state: Any) -> None:
+    from gateway.core.security import AuthService
+
+    state.inference_quota.limit = 2
+    deploy_echo(api, route="daily-quota")
+    serve_with(state, {"label": "ok"})
+    _, token = AuthService(state.registry).create_api_key(
+        "quota-test", scopes=("inference",)
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    url = "/v1/models/daily-quota/predict"
+    body = {"inputs": {"text": "same"}}
+
+    first = api.client.post(url, json=body, headers=headers)
+    second = api.client.post(url, json=body, headers=headers)
+    blocked = api.client.post(url, json=body, headers=headers)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["cache"] == "MISS"
+    assert second.json()["cache"] == "HIT"
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "QUOTA_EXCEEDED"
+    assert blocked.headers["Retry-After"].isdigit()
+    assert blocked.headers["X-ColabDeploy-Quota-Remaining"] == "0"
+
+
 def test_endpoint_update_tunes_the_resilience_policy(api: Any, stub_runtime: Any) -> None:
     result = deploy_echo(api, route="tunable")
     endpoint_id = result["endpoint"]["id"]

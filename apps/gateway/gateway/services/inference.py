@@ -197,31 +197,54 @@ class InferenceService:
 
         # --- forward to the agent --------------------------------------- #
         timeout_s = min(endpoint.timeout_ms / 1000.0, self.settings.default_timeout_ms / 1000.0)
-        try:
-            frame = await self.relay.exec_on_runtime(
-                runtime_id,
-                {
-                    "endpoint_id": endpoint.id,
-                    "model_id": model.id,
-                    "model_version": model.version,
-                    "payload": payload,
-                    "request_id": request_id,
-                },
-                path="/execute",
-                timeout_s=timeout_s,
-            )
-        except (AgentTimeout, RelayError) as exc:
-            self.telemetry.log(
-                f"forward failed: {exc.message}", level="warning", runtime_id=runtime_id
-            )
-            # A timeout usually means the VM is wedged; drop it and degrade.
-            if isinstance(exc, AgentTimeout):
-                await self.relay.unregister(runtime_id, reason="exec timeout")
-            if allow_degradation:
-                return await self._degrade(
-                    resolved, payload, key, request_id, started, cause=exc.code
+        attempted_runtime_ids = {runtime_id}
+        for attempt in range(2):
+            try:
+                frame = await self.relay.exec_on_runtime(
+                    runtime_id,
+                    {
+                        "endpoint_id": endpoint.id,
+                        "model_id": model.id,
+                        "model_version": model.version,
+                        "payload": payload,
+                        "request_id": request_id,
+                    },
+                    path="/execute",
+                    timeout_s=timeout_s,
                 )
-            raise InferenceFailure(exc.code, exc.message, 503, self.settings.retry_after_s) from exc
+                break
+            except (AgentTimeout, RelayError) as exc:
+                self.telemetry.log(
+                    f"forward failed: {exc.message}", level="warning", runtime_id=runtime_id
+                )
+                # A timeout usually means the VM is wedged; drop it before selecting a replica.
+                if isinstance(exc, AgentTimeout):
+                    await self.relay.unregister(runtime_id, reason="exec timeout")
+
+                if attempt == 0:
+                    alternate = self.runtimes.pick_runtime(
+                        endpoint.id,
+                        model.id,
+                        model.version,
+                        exclude_runtime_ids=attempted_runtime_ids,
+                    )
+                    if alternate is not None:
+                        runtime_id = alternate
+                        attempted_runtime_ids.add(alternate)
+                        self.telemetry.log(
+                            f"retrying inference on replica after {exc.code}",
+                            level="warning",
+                            runtime_id=alternate,
+                        )
+                        continue
+
+                if allow_degradation:
+                    return await self._degrade(
+                        resolved, payload, key, request_id, started, cause=exc.code
+                    )
+                raise InferenceFailure(
+                    exc.code, exc.message, 503, self.settings.retry_after_s
+                ) from exc
 
         if frame.status >= 400:
             body = frame.body or {}
