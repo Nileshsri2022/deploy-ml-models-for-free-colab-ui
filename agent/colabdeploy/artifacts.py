@@ -168,12 +168,25 @@ SUPPORTED_SCHEMES = ("file", "http", "https", "store", "gdrive", "hf", "inline")
 
 
 def uri_scheme(uri: str) -> str:
-    """Return the scheme of an artifact URI, or ``""`` for a bare local path."""
-    head, separator, _ = (uri or "").partition(":")
+    """Return the scheme of an artifact URI, or ``""`` for a bare local path.
+
+    Three cases matter:
+
+    * ``https://…``, ``inline:{…}``      -> the scheme, whether or not ``//`` follows
+    * ``/content/m.pkl``, ``m.pkl``      -> ``""`` (a local path)
+    * ``s3://bucket/key``                -> ``"s3"``, so ``resolve`` can refuse it
+      with a clear message instead of hunting for a file named ``s3://…``
+
+    A Windows-style ``C:\models\m.pkl`` stays a local path: ``c`` is not a
+    supported scheme and the remainder does not start with ``//``.
+    """
+    head, separator, rest = (uri or "").partition(":")
     if not separator:
         return ""
     head = head.strip().lower()
-    return head if head in SUPPORTED_SCHEMES else ""
+    if head in SUPPORTED_SCHEMES:
+        return head
+    return head if rest.startswith("//") else ""
 
 
 class ArtifactResolver:
