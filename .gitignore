@@ -1,0 +1,62 @@
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.log
+
+# --- ColabDeploy runtime data (control-plane state; never commit) ---------
+.data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+cache.json
+gateway-data/
+
+# --- Uploaded model artifacts ---------------------------------------------
+artifacts/
+*.pkl
+*.joblib
+*.pt
+*.pth
+*.onnx
+*.h5
+*.keras
+*.safetensors
+*.bin
+!apps/ui/public/*.bin
+
+# --- Node / UI ------------------------------------------------------------
+node_modules/
+apps/ui/dist/
+apps/ui/.vite/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# --- Editors / OS ---------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Secrets --------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+cdp-keys.json
