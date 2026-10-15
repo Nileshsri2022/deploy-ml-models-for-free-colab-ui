@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "colabdeploy-gateway"
+version = "0.1.0"
+description = "ColabDeploy control plane: API gateway, model registry, WS relay and resilience cache"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+    "colabdeploy-shared==0.1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5", "websockets>=12"]
+
+[project.scripts]
+colabdeploy-gateway = "gateway.main:cli"
+
+[tool.setuptools.packages.find]
+include = ["gateway*"]
+
+[tool.pytest.ini_options]
+# The suite is deliberately synchronous (see tests/test_gateway_api.py::run_in_app),
+# so there is no pytest-asyncio dependency. The authoritative config for a test run
+# from the repo root is `pytest.ini`; this section only helps when running pytest
+# from inside apps/gateway.
+testpaths = ["../../tests"]
