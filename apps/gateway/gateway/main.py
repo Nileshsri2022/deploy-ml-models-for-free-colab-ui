@@ -264,13 +264,26 @@ def _mount_spa(app: FastAPI) -> None:
     async def spa(path: str = "") -> Any:
         """Serve a real file from ``dist/``, else fall back to ``index.html``.
 
-        A ``StaticFiles(html=True)`` mount would 404 on ``/ui/models``; the UI
-        hash-routes so it never asks for that, but a pasted link should still
-        land on the app rather than an error page.
+        Two rules make this safe to point a browser at:
+
+        * a path that *looks like a file* (has an extension) is served or 404s.
+          Returning ``index.html`` for a missing ``.js`` would hand the browser
+          HTML with a JavaScript MIME type and produce a baffling parse error
+          instead of a clean 404.
+        * an extension-less path is a client-side route, so it gets the SPA.
+          ``StaticFiles(html=True)`` would 404 on ``/ui/models``; the UI
+          hash-routes so it never asks for that, but a pasted link should still
+          land on the app.
+
+        Resolved paths must stay inside the build directory.
         """
-        candidate = (dist / path).resolve() if path else None
-        if candidate and candidate.is_file() and str(candidate).startswith(str(root)):
-            return FileResponse(str(candidate))
+        if path:
+            candidate = (dist / path).resolve()
+            inside = str(candidate).startswith(str(root))
+            if inside and candidate.is_file():
+                return FileResponse(str(candidate))
+            if not inside or Path(path).suffix:
+                return JSONResponse({"error": {"code": "NOT_FOUND", "message": f"no such file: {path}"}}, 404)
         return FileResponse(str(index))
 
     @app.get("/favicon.ico", include_in_schema=False)
