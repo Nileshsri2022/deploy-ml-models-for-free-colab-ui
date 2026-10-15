@@ -60,3 +60,6 @@ Thumbs.db
 !.env.example
 *.pem
 cdp-keys.json
+
+# TypeScript incremental build info (apps/ui)
+*.tsbuildinfo
