@@ -8,6 +8,12 @@ discriminator; bodies are base64 when binary.
 
 Keep the frame set tiny and versioned: ``AGENT_PROTOCOL_VERSION`` is checked on
 hello so an old agent gets a clear error instead of undefined behaviour.
+
+Timestamp convention: **frames carry ISO-8601 strings**, not ``datetime`` objects.
+The frames are a transport detail shared with a Python agent that may be running a
+different pydantic build inside a Colab VM, so the wire format stays boring and
+textual. :mod:`colabdeploy_shared.schemas` (the domain/REST models) uses real
+``datetime`` fields, and ``runtime_manager._parse_dt`` bridges the two.
 """
 
 from __future__ import annotations

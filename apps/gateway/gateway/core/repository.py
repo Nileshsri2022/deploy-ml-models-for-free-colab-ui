@@ -11,7 +11,7 @@ from typing import Any, Iterable, Type, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from colabdeploy_shared.enums import DeploymentState, RuntimeState
+from colabdeploy_shared.enums import DeploymentState, JobState, RuntimeState
 from colabdeploy_shared.schemas import (
     ApiKeyInfo,
     DeploymentInfo,
@@ -172,7 +172,7 @@ class JobRepository(Repository):
 
     def queued(self) -> list[JobInfo]:
         return sorted(
-            (j for j in self.list() if j.state.value == "queued"), key=lambda j: j.created_at
+            (j for j in self.list() if j.state == JobState.QUEUED), key=lambda j: j.created_at
         )
 
     def prune(self, older_than: datetime) -> int:

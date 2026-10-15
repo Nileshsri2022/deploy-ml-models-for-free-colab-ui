@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Header, HTTPException, Query, Request
 
 from gateway.core.security import (
     ANONYMOUS,
@@ -31,8 +31,19 @@ class AuthError(HTTPException):
         super().__init__(status_code=status_code, detail={"code": "UNAUTHENTICATED", "message": message})
 
 
-def app_state(request: Request) -> AppState:
-    state = getattr(request.app.state, "cdp", None)
+def app_state(request: Any) -> AppState:
+    """Resolve the app container from a ``Request`` **or** a ``WebSocket``.
+
+    The relay route gets a WebSocket, which is not a ``Request``; both carry the
+    ASGI ``scope``, so read the app off that and fall back to the module global.
+    """
+    scope = getattr(request, "scope", None)
+    app = None
+    if scope is not None:
+        app = scope.get("app")
+    if app is None:
+        app = getattr(request, "app", None)
+    state = getattr(getattr(app, "state", None), "cdp", None)
     return state or get_state()
 
 
@@ -41,9 +52,18 @@ def auth_service(request: Request) -> AuthService:
 
 
 def _extract_token(
-    authorization: str | None, x_api_key: str | None, runtime_token: str | None
+    authorization: str | None,
+    x_api_key: str | None,
+    runtime_token: str | None = None,
+    query_api_key: str | None = None,
 ) -> str:
-    for raw in (authorization, x_api_key, runtime_token):
+    """Pull a credential out of whichever place the client could put it.
+
+    ``query_api_key`` exists for one reason: the browser ``EventSource`` API
+    cannot set request headers, and the UI live-tails logs over SSE. It is the
+    last resort in the precedence order, and the log routes are read-only.
+    """
+    for raw in (authorization, x_api_key, runtime_token, query_api_key):
         if not raw:
             continue
         value = raw.strip()
@@ -58,10 +78,11 @@ def get_principal(
     request: Request,
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    api_key: str | None = Query(default=None),
 ) -> Principal:
     """Resolve the caller. Raises only if auth is required and missing/invalid."""
     state = app_state(request)
-    token = _extract_token(authorization, x_api_key, None)
+    token = _extract_token(authorization, x_api_key, None, api_key)
     if token:
         principal = AuthService(state.registry).verify_api_key(token)
         if principal is None:
@@ -99,10 +120,11 @@ def manage_dependency(
     request: Request,
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    api_key: str | None = Query(default=None, description="header-less fallback (SSE clients)"),
 ) -> Principal:
     """FastAPI dependency: authenticated caller that must hold ``manage``."""
     state = app_state(request)
-    token = _extract_token(authorization, x_api_key, None)
+    token = _extract_token(authorization, x_api_key, None, api_key)
     if not token:
         if not state.settings.require_auth:
             return Principal(kind="api_key", id="dev", label="dev", scopes=(SCOPE_MANAGE,))
@@ -119,10 +141,11 @@ def inference_dependency(
     request: Request,
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    api_key: str | None = Query(default=None, description="header-less fallback (SSE clients)"),
 ) -> Principal:
     """FastAPI dependency for ``/v1`` inference routes."""
     state = app_state(request)
-    token = _extract_token(authorization, x_api_key, None)
+    token = _extract_token(authorization, x_api_key, None, api_key)
     if token:
         principal = AuthService(state.registry).verify_api_key(token)
         if principal is None:

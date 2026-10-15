@@ -21,7 +21,8 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -103,6 +104,16 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     @app.get("/", tags=["meta"])
     async def root(request: Request) -> Any:
+        """Site root: the UI for browsers, JSON service metadata for clients.
+
+        Content negotiation matters here because the recommended free-tier
+        topology is one process serving both. Opening the URL in a browser
+        should show the dashboard, while ``curl``/SDKs keep getting a
+        machine-readable description of what this gateway exposes.
+        """
+        index = _spa_index()
+        if index is not None and _wants_html(request):
+            return FileResponse(str(index))
         st = app_state(request)
         return {
             "name": settings.app_name,
@@ -129,6 +140,31 @@ def create_app(state: AppState | None = None) -> FastAPI:
             "uptime_s": round(time.time() - st.telemetry.started_at, 1),
         }
 
+    @app.exception_handler(HTTPException)
+    async def http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+        """Keep our error envelope on FastAPI/Starlette HTTP errors too."""
+        detail = exc.detail
+        if isinstance(detail, dict) and "code" in detail:
+            body = {"error": detail}
+        else:
+            body = {"error": {"code": _status_code_name(exc.status_code), "message": str(detail)}}
+        headers = dict(getattr(exc, "headers", None) or {})
+        return JSONResponse(status_code=exc.status_code, content=body, headers=headers or None)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception(request: Request, exc: RequestValidationError) -> JSONResponse:
+        """422s carry the field-level detail the deploy wizard needs to show."""
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "request body does not match the expected schema",
+                    "detail": {"errors": jsonable_errors(exc.errors())},
+                }
+            },
+        )
+
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:
         st = app_state(request)
@@ -145,6 +181,29 @@ def create_app(state: AppState | None = None) -> FastAPI:
 # --------------------------------------------------------------------------- #
 # UI mounting
 # --------------------------------------------------------------------------- #
+def _status_code_name(status_code: int) -> str:
+    try:
+        from http import HTTPStatus
+
+        return HTTPStatus(status_code).name
+    except ValueError:  # pragma: no cover - non-standard code
+        return f"HTTP_{status_code}"
+
+
+def jsonable_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Trim Pydantic's error dicts down to the fields a UI can render."""
+    out = []
+    for error in errors[:20]:
+        out.append(
+            {
+                "field": ".".join(str(p) for p in error.get("loc", [])[1:]) or None,
+                "message": str(error.get("msg", "")),
+                "type": str(error.get("type", "")),
+            }
+        )
+    return out
+
+
 def _spa_dist() -> Path:
     override = os.getenv("CDP_UI_DIST")
     if override:
@@ -153,25 +212,75 @@ def _spa_dist() -> Path:
     return here / "apps" / "ui" / "dist"
 
 
+def _spa_index() -> Path | None:
+    """Path to the built UI's ``index.html``, or ``None`` if it was never built."""
+    index = _spa_dist() / "index.html"
+    return index if index.exists() else None
+
+
+def _wants_html(request: Request) -> bool:
+    """True when the caller is a browser rather than a script.
+
+    ``httpx`` and ``curl`` send ``Accept: */*`` (or nothing), browsers put
+    ``text/html`` first - so the API root stays JSON for programmatic callers.
+    """
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        return True
+    # A few webviews send only ``*/*`` plus an html-ish user agent.
+    agent = request.headers.get("user-agent", "").lower()
+    return "*/*" in accept and any(
+        marker in agent for marker in ("mozilla", "chrome", "safari", "edge", "firefox")
+    )
+
+
 def _mount_spa(app: FastAPI) -> None:
-    """Serve the built SPA if it exists - single-process, zero-cost hosting."""
+    """Serve the built SPA if it exists - single-process, zero-cost hosting.
+
+    Two mount points, because the bundle is built with a relative asset base
+    (``base: './'``) so the same ``dist/`` works from any prefix:
+
+    * ``/assets/...`` and ``/`` - the SPA at the site root, which is what you
+      want when the gateway *is* the deployment (Render/Fly/Railway free tier).
+    * ``/ui/`` (``html=True``, so unknown paths fall back to ``index.html``) -
+      handy when something else owns the root, and it keeps deep links working.
+
+    The UI uses hash routing, so no server-side rewrite rules are needed for
+    ``/models``, ``/cache`` etc. That is deliberate: this project targets free
+    hosts where you do not control the reverse proxy in front of you.
+    """
     dist = _spa_dist()
-    if not dist.exists():
+    index = dist / "index.html"
+    if not index.exists():
         return
 
     assets = dist / "assets"
     if assets.exists():
         app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
 
-    index = dist / "index.html"
+    root = dist.resolve()
 
     @app.get("/ui", include_in_schema=False)
     @app.get("/ui/{path:path}", include_in_schema=False)
     async def spa(path: str = "") -> Any:
+        """Serve a real file from ``dist/``, else fall back to ``index.html``.
+
+        A ``StaticFiles(html=True)`` mount would 404 on ``/ui/models``; the UI
+        hash-routes so it never asks for that, but a pasted link should still
+        land on the app rather than an error page.
+        """
         candidate = (dist / path).resolve() if path else None
-        if candidate and candidate.is_file() and str(candidate).startswith(str(dist.resolve())):
+        if candidate and candidate.is_file() and str(candidate).startswith(str(root)):
             return FileResponse(str(candidate))
-        return FileResponse(str(index)) if index.exists() else JSONResponse({"ui": "not built"}, 404)
+        return FileResponse(str(index))
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> Any:
+        candidate = dist / "favicon.svg"
+        if candidate.exists():
+            return FileResponse(str(candidate))
+        # A missing favicon must not become a 500 in the logs of a healthy app.
+        return JSONResponse({"ui": "no favicon"}, status_code=404)
 
 
 # --------------------------------------------------------------------------- #

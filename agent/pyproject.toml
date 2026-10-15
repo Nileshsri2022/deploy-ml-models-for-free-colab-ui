@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "colabdeploy-agent"
+version = "0.1.0"
+description = "Colab-side agent: turns a notebook VM into a supervised, self-healing inference runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "httpx>=0.27",
+    "websockets>=12",
+    "pydantic>=2.7",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "colabdeploy-shared==0.1.0",
+]
+
+[project.optional-dependencies]
+# Adapters lazy-import these; install only what your model needs.
+sklearn = ["scikit-learn>=1.3", "joblib>=1.3"]
+xgboost = ["xgboost>=2.0"]
+torch = ["torch>=2.1"]
+onnx = ["onnxruntime>=1.17", "numpy>=1.24"]
+tf = ["tensorflow-cpu>=2.15"]
+hf = ["transformers>=4.38", "huggingface-hub>=0.20"]
+drive = ["gdown>=5.0"]
+dev = ["pytest>=8", "ruff>=0.5"]
+all = [
+    "scikit-learn>=1.3",
+    "joblib>=1.3",
+    "numpy>=1.24",
+    "gdown>=5.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["colabdeploy*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = ["E501", "B008", "B904"]

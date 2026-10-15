@@ -579,7 +579,7 @@ async def list_jobs(
     st = app_state(request)
     jobs = st.registry.jobs.list()
     if state_filter:
-        jobs = [j for j in jobs if j.state.value == state_filter]
+        jobs = [j for j in jobs if str(j.state.value) == state_filter]
     jobs.sort(key=lambda j: j.created_at, reverse=True)
     return {"count": len(jobs[:limit]), "jobs": [j.model_dump(mode="json") for j in jobs[:limit]]}
 

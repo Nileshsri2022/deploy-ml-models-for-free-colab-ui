@@ -68,7 +68,7 @@ async def register_runtime(
     runtime_id = str(record["id"])
 
     caps = RuntimeCapabilities.model_validate(
-        {**record.get("capabilities", {}), **(body.get("capabilities") or {})}
+        {**(record.get("capabilities") or {}), **(body.get("capabilities") or {})}
     )
     session_started = body.get("session_started_at") or utcnow().isoformat()
     state.registry.store.update(
@@ -298,7 +298,9 @@ async def relay_socket(websocket: WebSocket) -> None:
         await state.relay.unregister(runtime_id, reason=reason)
         raise
     except Exception as exc:  # noqa: BLE001 - never leak an exception out of the loop
-        reason = f"relay error: {exc}"
+        # Name the exception type: "relay error: 'str' object has no attribute x"
+        # is impossible to triage from a log line alone.
+        reason = f"relay error: {type(exc).__name__}: {exc}"
     finally:
         await state.relay.unregister(runtime_id, reason=reason)
         emit(f"tunnel closed: {reason}", "warning")

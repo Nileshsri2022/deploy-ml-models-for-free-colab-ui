@@ -21,9 +21,11 @@ from colabdeploy_shared.enums import (
     DegradationMode,
     DeploymentState,
     EndpointVisibility,
+    RuntimeState,
 )
 from colabdeploy_shared.schemas import (
     ArtifactSpec,
+    enum_value,
     DeploymentInfo,
     EndpointCreate,
     EndpointInfo,
@@ -199,10 +201,16 @@ class DeploymentService:
     # ------------------------------------------------------------------ #
     # Endpoints
     # ------------------------------------------------------------------ #
-    def create_endpoint(self, spec: EndpointCreate) -> EndpointInfo:
+    def create_endpoint(self, spec: EndpointCreate, *, model_version: int | None = None) -> EndpointInfo:
+        if not spec.model_id:
+            raise ValueError("endpoint needs a model_id")
         model = self.registry.models.get(spec.model_id)
         if model is None:
             raise ValueError(f"model '{spec.model_id}' not found")
+        if model_version is not None:
+            pinned = self.registry.models.by_name_version(model.name, model_version)
+            if pinned is not None:
+                model = pinned
         route = slugify(spec.route or model.name)
         existing = self.registry.endpoints.by_route(route)
         if existing is not None and existing.model_id != spec.model_id:
@@ -310,7 +318,9 @@ class DeploymentService:
 
         endpoint = self.registry.endpoints.get(endpoint_id) if endpoint_id else None
         if endpoint is None:
-            endpoint = self.create_endpoint(endpoint_spec or EndpointCreate(model_id=base.id))
+            spec = endpoint_spec.model_copy(deep=True) if endpoint_spec else EndpointCreate()
+            spec.model_id = base.id  # the deploy call is authoritative
+            endpoint = self.create_endpoint(spec, model_version=base.version)
             created_endpoint = True
         else:
             created_endpoint = False
@@ -390,9 +400,9 @@ class DeploymentService:
             "url": (base_url.rstrip("/") + path) if base_url else path,
             "path": path,
             "serving_runtime_id": dep.runtime_id if dep else None,
-            "deployment_state": dep.state.value if dep else None,
-            "runtime_state": runtime.state.value if runtime else None,
-            "live": bool(runtime and runtime.state.value == "online"),
+            "deployment_state": enum_value(dep.state) if dep else None,
+            "runtime_state": enum_value(runtime.state) if runtime else None,
+            "live": bool(runtime and runtime.state == RuntimeState.ONLINE),
             "schema_in": (model.schema_in if model else endpoint.schema_in).model_dump(mode="json"),
             "schema_out": (model.schema_out if model else endpoint.schema_out).model_dump(mode="json"),
             "curl": curl_snippet(base_url, endpoint.route, model.schema_in if model else None),

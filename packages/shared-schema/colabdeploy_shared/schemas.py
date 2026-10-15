@@ -8,6 +8,7 @@ two shows up as a test failure here rather than a runtime 500 in production.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -27,14 +28,33 @@ def utcnow() -> datetime:
 
 
 class Wire(BaseModel):
-    """Base class: strict-ish JSON in/out with a stable shape."""
+    """Base class: strict-ish JSON in/out with a stable shape.
+
+    ``use_enum_values`` is deliberately **off**: enum fields stay enums inside the
+    process so comparisons cannot silently degrade to ``str != enum`` (which is
+    always False), while ``model_dump(mode="json")`` still serialises them to their
+    plain string values on the wire. Use :func:`enum_value` when a value may have
+    arrived as either.
+    """
 
     model_config = ConfigDict(
         populate_by_name=True,
-        use_enum_values=True,
         extra="ignore",
         ser_json_timedelta="float",
     )
+
+
+def enum_value(value: Any, default: str = "") -> str:
+    """Coerce an enum-or-string field to its plain string value.
+
+    Defensive against both worlds: Pydantic may hand back the enum, and a raw dict
+    from the JSON store may hand back the string.
+    """
+    if isinstance(value, Enum):
+        return str(value.value)
+    if value is None:
+        return default
+    return str(value)
 
 
 # --------------------------------------------------------------------------- #
@@ -61,10 +81,13 @@ class ArtifactSpec(Wire):
 
     @field_validator("uri")
     @classmethod
-    def _no_empty(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("artifact uri must not be empty")
-        return v.strip()
+    def _normalise_uri(cls, v: str) -> str:
+        """Strip whitespace; allow "" for not-yet-set defaults (e.g. ModelMeta).
+
+        Callers that actually need an artifact (``ModelCreate``) validate presence
+        at the API boundary, so an empty default here stays harmless.
+        """
+        return (v or "").strip()
 
 
 class ModelSchema(Wire):
@@ -157,7 +180,10 @@ class ModelInfo(Wire):
 
 
 class EndpointCreate(Wire):
-    model_id: str
+    model_id: str | None = Field(
+        default=None,
+        description="required for POST /api/endpoints; inferred by POST /api/deploy",
+    )
     route: str | None = Field(default=None, description="defaults to the model name, slugified")
     visibility: EndpointVisibility = EndpointVisibility.PUBLIC
     cache_ttl_s: int = Field(default=300, ge=0)

@@ -45,16 +45,26 @@ def canonical_json(payload: Any) -> str:
 
 
 def stable_hash(*parts: Any) -> str:
-    """SHA-256 over the canonical form of each part, joined by ':'."""
+    """SHA-256 over the canonical form of each part, joined by ':'.
+
+    Every part is prefixed with a one-byte **type tag** before hashing, so values
+    that serialise identically cannot collide: ``1``, ``"1"`` and ``b"1"`` all hash
+    differently, as do ``1``/``1.0``/``True`` inside containers (handled by
+    :func:`canonical_json`). Without the tag, ``stable_hash("1")`` and
+    ``stable_hash(1)`` would share a cache key and serve each other's answers.
+    """
     h = hashlib.sha256()
     for i, part in enumerate(parts):
         if i:
             h.update(b":")
         if isinstance(part, (bytes, bytearray)):
+            h.update(b"B")
             h.update(bytes(part))
         elif isinstance(part, str):
+            h.update(b"S")
             h.update(part.encode("utf-8"))
         else:
+            h.update(b"J")
             h.update(canonical_json(part).encode("utf-8"))
     return h.hexdigest()
 

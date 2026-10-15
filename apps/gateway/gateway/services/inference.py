@@ -24,6 +24,7 @@ from typing import Any
 from colabdeploy_shared.enums import DegradationMode, JobState
 from colabdeploy_shared.schemas import (
     EndpointInfo,
+    enum_value,
     InferenceError,
     InferenceResponse,
     JobInfo,

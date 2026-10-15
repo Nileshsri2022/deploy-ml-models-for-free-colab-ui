@@ -33,6 +33,7 @@ from colabdeploy_shared.schemas import (
     EndpointCreate,
     EndpointInfo,
     EndpointUpdate,
+    enum_value,
     HealthResponse,
     HeartbeatRequest,
     InferenceError,
@@ -90,6 +91,7 @@ __all__ = [
     "RuntimeTokenInfo",
     "StatusResponse",
     "canonical_json",
+    "enum_value",
     "parse_frame",
     "stable_hash",
 ]

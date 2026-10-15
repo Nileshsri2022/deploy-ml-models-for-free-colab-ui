@@ -20,10 +20,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from colabdeploy_shared.enums import DeploymentState, RuntimeState
+from colabdeploy_shared.enums import DeploymentState, JobState, RuntimeState
 from colabdeploy_shared.protocol import HelloFrame, HeartbeatFrame, AckFrame, LogFrame
 from colabdeploy_shared.schemas import (
     DeploymentInfo,
+    enum_value,
     DesiredDeployment,
     DesiredState,
     JobInfo,
@@ -126,11 +127,10 @@ class RuntimeManager:
         record = self.registry.store.get("runtimes", runtime_id)
         if record is None:
             return
-        caps = RuntimeCapabilities.model_validate(
-            {**record.get("capabilities", {}), **frame.capabilities.model_dump(mode="json")}
-        )
+        reported = _as_dict(frame.capabilities)
+        caps = RuntimeCapabilities.model_validate({**(record.get("capabilities") or {}), **reported})
         state = RuntimeState.ONLINE
-        if frame.state in (RuntimeState.DEGRADED.value, RuntimeState.DEGRADED):
+        if enum_value(frame.state) == RuntimeState.DEGRADED.value:
             state = RuntimeState.DEGRADED
         self.registry.store.update(
             "runtimes",
@@ -140,10 +140,10 @@ class RuntimeManager:
                 "capabilities": caps.model_dump(mode="json"),
                 "loaded_models": frame.loaded_models,
                 "last_heartbeat_at": utcnow().isoformat(),
+                # Wire frames carry ISO-8601 *strings* (see protocol.py); only the
+                # domain schemas in schemas.py use datetime objects.
                 "session_started_at": (
-                    frame.session_started_at.isoformat()
-                    if frame.session_started_at
-                    else record.get("session_started_at")
+                    frame.session_started_at or record.get("session_started_at")
                 ),
                 "queue_depth": frame.queue_depth,
                 "inflight": frame.inflight,
@@ -226,9 +226,10 @@ class RuntimeManager:
         """``loaded_models`` entries are ``model_id@version``; flip matching deployments."""
         model_id, _, version = model_key.partition("@")
         for dep in self.registry.deployments.for_runtime(runtime_id):
-            if dep.model_id == model_id and str(dep.model_version) in ("", version) and (
+            matches = dep.model_id == model_id and (
                 version == "" or dep.model_version == int(version or 0)
-            ):
+            )
+            if matches:
                 if dep.state != DeploymentState.READY:
                     self.registry.store.update(
                         "deployments",
@@ -367,13 +368,19 @@ class RuntimeManager:
 
             new_state = runtime.state
             if not connected:
-                new_state = (
-                    RuntimeState.STALE
-                    if gap <= self.settings.heartbeat_offline_s
-                    else RuntimeState.OFFLINE
-                )
-                if runtime.state in (RuntimeState.ONLINE, RuntimeState.CONNECTING, RuntimeState.DEGRADED):
-                    new_state = RuntimeState.STALE
+                # The relay is authoritative for an explicit disconnect (it already
+                # marked OFFLINE); only *demote* a runtime that still looks live but
+                # stopped heartbeating - e.g. its tunnel thread wedged.
+                if runtime.state in (
+                    RuntimeState.ONLINE,
+                    RuntimeState.CONNECTING,
+                    RuntimeState.DEGRADED,
+                ):
+                    new_state = (
+                        RuntimeState.OFFLINE
+                        if gap > self.settings.heartbeat_offline_s
+                        else RuntimeState.STALE
+                    )
             elif gap > self.settings.heartbeat_stale_s:
                 new_state = RuntimeState.STALE
             elif runtime.state in (RuntimeState.STALE, RuntimeState.OFFLINE, RuntimeState.CONNECTING):
@@ -416,7 +423,7 @@ class RuntimeManager:
         # Expire old jobs so the queue cannot grow forever.
         cutoff = now - timedelta(seconds=self.settings.job_ttl_s)
         for job in self.registry.jobs.list():
-            if job.state.value == "queued" and job.created_at < cutoff:
+            if job.state == JobState.QUEUED and job.created_at < cutoff:
                 self.registry.store.update(
                     "jobs",
                     job.id,
@@ -459,6 +466,14 @@ class RuntimeManager:
             record = self.registry.store.get("runtimes", runtime.id) or {}
             token_hint = f"&runtimeId={runtime.id}&tokenPrefix={record.get('token_prefix', '')}"
         return f"{base}?tunnel=true{token_hint}"
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Pydantic model *or* plain dict -> dict (frames may carry either)."""
+    if isinstance(value, dict):
+        return value
+    dump = getattr(value, "model_dump", None)
+    return dump(mode="json") if callable(dump) else {}
 
 
 def runtime_seed(ids: list[str]) -> str:

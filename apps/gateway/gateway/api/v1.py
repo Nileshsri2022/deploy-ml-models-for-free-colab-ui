@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from colabdeploy_shared.enums import JobState
+from colabdeploy_shared.enums import DeploymentState, JobState, RuntimeState
 from colabdeploy_shared.schemas import (
     HealthResponse,
     InferenceResponse,
@@ -237,14 +237,16 @@ async def status(request: Request) -> StatusResponse:
     """One call for the dashboard: runtimes, endpoints, cache, queue."""
     state = app_state(request)
     runtimes = [state.runtimes.runtime_view(r) for r in state.registry.runtimes.list()]
-    online = [r for r in runtimes if r.state == "online"]
-    degraded = [r for r in runtimes if r.state in ("degraded", "stale")]
+    online = [r for r in runtimes if r.state == RuntimeState.ONLINE]
+    degraded = [
+        r for r in runtimes if r.state in (RuntimeState.DEGRADED, RuntimeState.STALE)
+    ]
     endpoints = state.registry.endpoints.list()
     serving = sum(
         1
         for ep in endpoints
         if (dep := state.registry.deployments.active_for_endpoint(ep.id)) is not None
-        and dep.state.value == "ready"
+        and dep.state == DeploymentState.READY
     )
     summary = state.telemetry.summary()
     return StatusResponse(
@@ -256,7 +258,7 @@ async def status(request: Request) -> StatusResponse:
         endpoints=len(endpoints),
         endpoints_serving=serving,
         deployments_ready=sum(
-            1 for d in state.registry.deployments.list() if d.state.value == "ready"
+            1 for d in state.registry.deployments.list() if d.state == DeploymentState.READY
         ),
         jobs_queued=len(state.registry.jobs.queued()),
         cache=state.cache.stats(),
@@ -309,7 +311,9 @@ async def metrics(request: Request) -> str:
         f"colabdeploy_uptime_seconds {summary['uptime_s']}",
     ]
     for runtime in state.registry.runtimes.list():
-        state_value = {"online": 1, "degraded": 0.5, "stale": 0.25}.get(str(runtime.state.value), 0)
+        state_value = {"online": 1, "degraded": 0.5, "stale": 0.25}.get(
+            str(runtime.state.value), 0
+        )
         lines.append(
             f'colabdeploy_runtime_state{{runtime_id="{runtime.id}",label="{runtime.label}"}} {state_value}'
         )

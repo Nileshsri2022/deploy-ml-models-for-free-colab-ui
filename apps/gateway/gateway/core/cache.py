@@ -710,13 +710,18 @@ def build_cache(
     max_bytes: int = 256 * 1024 * 1024,
     persist: bool = True,
 ) -> CacheBackend:
-    """Factory used by the app lifespan and by tests."""
+    """Factory used by the app lifespan and by tests.
+
+    Bounds are honoured exactly as given: the caller (config or a test) decides how
+    much memory the resilience buffer may occupy, and silently raising a cap here
+    would make that limit meaningless.
+    """
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     if backend == "sqlite":
-        return SqliteCache(data_dir / "cache.sqlite3", max_entries=max(max_entries, 1000))
+        return SqliteCache(data_dir / "cache.sqlite3", max_entries=max(1, max_entries))
     return MemoryCache(
-        max_entries=max_entries,
-        max_bytes=max_bytes,
+        max_entries=max(1, max_entries),
+        max_bytes=max(1024, max_bytes),
         persist_path=(data_dir / "cache.json") if persist else None,
     )
