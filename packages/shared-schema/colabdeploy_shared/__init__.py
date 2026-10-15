@@ -33,7 +33,6 @@ from colabdeploy_shared.schemas import (
     EndpointCreate,
     EndpointInfo,
     EndpointUpdate,
-    enum_value,
     HealthResponse,
     HeartbeatRequest,
     InferenceError,
@@ -49,6 +48,7 @@ from colabdeploy_shared.schemas import (
     RuntimeInfo,
     RuntimeTokenInfo,
     StatusResponse,
+    enum_value,
 )
 from colabdeploy_shared.utils import canonical_json, stable_hash
 
@@ -75,6 +75,7 @@ __all__ = [
     "FrameKind",
     "HealthResponse",
     "HeartbeatRequest",
+    "HelloFrame",
     "InferenceError",
     "InferenceResponse",
     "JobCreate",

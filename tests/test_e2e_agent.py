@@ -21,8 +21,9 @@ import json
 import socket
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 import uvicorn
@@ -36,7 +37,6 @@ from colabdeploy.registry_client import GatewayClient  # noqa: E402
 from colabdeploy.runtime import AgentRuntime  # noqa: E402
 from colabdeploy.state import make_reconciler  # noqa: E402
 from colabdeploy.tunnel import TunnelClient, TunnelConfig, ws_url_from_http  # noqa: E402
-
 from tests.support import TEST_ADMIN_KEY, wait_for  # noqa: E402
 
 
@@ -583,9 +583,9 @@ def test_tunnel_recovers_from_a_gateway_restart(
 
     # Close the socket from the agent side - the same thing a flaky network or a
     # Colab pre-emption does. The reconnect loop must recover without help.
-    loop = tunnel._loop  # noqa: SLF001 - test-only inspection
+    loop = tunnel._loop
     assert loop is not None
-    asyncio.run_coroutine_threadsafe(tunnel._ws.close(code=1001), loop).result(timeout=10)  # noqa: SLF001
+    asyncio.run_coroutine_threadsafe(tunnel._ws.close(code=1001), loop).result(timeout=10)
 
     wait_for(
         lambda: tunnel.stats.connects > connects_before,

@@ -192,7 +192,7 @@ def _as_log_line(raw: dict[str, Any], runtime_id: str) -> Any:
 
     try:
         return LogLine.model_validate({**raw, "runtime_id": runtime_id, "source": "agent"})
-    except Exception:  # noqa: BLE001
+    except Exception:
         return LogLine(runtime_id=runtime_id, source="agent", message=str(raw)[:2000])
 
 
@@ -297,7 +297,7 @@ async def relay_socket(websocket: WebSocket) -> None:
         reason = "gateway cancelled"
         await state.relay.unregister(runtime_id, reason=reason)
         raise
-    except Exception as exc:  # noqa: BLE001 - never leak an exception out of the loop
+    except Exception as exc:
         # Name the exception type: "relay error: 'str' object has no attribute x"
         # is impossible to triage from a log line alone.
         reason = f"relay error: {type(exc).__name__}: {exc}"
@@ -327,4 +327,4 @@ async def _safe_send(websocket: WebSocket, frame: Any) -> None:
 
 
 # Keep the exec-response type importable from here for tests that patch the relay.
-__all__ = ["AckFrame", "ExecResponseFrame", "RELAY_IDLE_TIMEOUT_S", "router"]
+__all__ = ["RELAY_IDLE_TIMEOUT_S", "AckFrame", "ExecResponseFrame", "router"]

@@ -16,6 +16,7 @@ line - a model deployed on a T4 must still serve after Colab hands us a CPU box.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +63,7 @@ class PyTorchAdapter(ModelAdapter):
         if model is None:
             try:
                 model = torch.load(str(artifact_path), map_location=self.device, weights_only=False)
-            except Exception as first_exc:  # noqa: BLE001
+            except Exception as first_exc:
                 # 3) state_dict + a user-supplied architecture factory.
                 state = _try_state_dict(torch, artifact_path)
                 if state is None:
@@ -90,7 +91,7 @@ class PyTorchAdapter(ModelAdapter):
             try:
                 model.to("cpu")
                 model.eval()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 raise AdapterError(f"could not place model on CPU either: {exc}") from exc
 
         self.model = model
@@ -144,10 +145,8 @@ class PyTorchAdapter(ModelAdapter):
                     output = self.model(tensor)
         except RuntimeError as exc:
             if "CUDA out of memory" in str(exc):
-                try:
+                with contextlib.suppress(Exception):
                     torch.cuda.empty_cache()
-                except Exception:  # noqa: BLE001
-                    pass
             raise AdapterError(f"forward pass failed: {exc}", hint=f"input shape {list(tensor.shape)}") from exc
         if isinstance(output, (tuple, list)):
             output = output[0] if output else None
@@ -181,10 +180,10 @@ class PyTorchAdapter(ModelAdapter):
 def _try_state_dict(torch: Any, artifact_path: Path) -> Any | None:
     try:
         obj = torch.load(str(artifact_path), map_location="cpu", weights_only=True)
-    except Exception:  # noqa: BLE001
+    except Exception:
         try:
             obj = torch.load(str(artifact_path), map_location="cpu", weights_only=False)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
     if isinstance(obj, dict) and all(isinstance(k, str) for k in list(obj)[:8]):
         return obj
@@ -197,7 +196,7 @@ def _build_from_entrypoint(meta: ModelMeta, state: Any, torch: Any, device: str)
         return state
     namespace: dict[str, Any] = {"torch": torch, "__name__": "colabdeploy_arch"}
     try:
-        exec(compile(meta.entrypoint, f"<arch:{meta.model_id}>", "exec"), namespace)  # noqa: S102
+        exec(compile(meta.entrypoint, f"<arch:{meta.model_id}>", "exec"), namespace)
     except SyntaxError as exc:
         raise AdapterError(f"architecture snippet has a syntax error: {exc.msg}") from exc
     factory = namespace.get("build_model") or namespace.get("arch") or namespace.get("model_fn")
@@ -207,7 +206,10 @@ def _build_from_entrypoint(meta: ModelMeta, state: Any, torch: Any, device: str)
             hint="def build_model(): return MyNet(...)",
         )
     module = factory()
-    missing = module.load_state_dict(state, strict=False)
+    # strict=False on purpose: a snippet-built architecture rarely lines up with a
+    # checkpoint exactly. The warm-up call that follows is what proves the model
+    # actually runs, which beats failing here on a name mismatch.
+    _ = module.load_state_dict(state, strict=False)
     return module.to(device)
 
 

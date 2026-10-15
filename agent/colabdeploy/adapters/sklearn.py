@@ -139,7 +139,7 @@ class SklearnAdapter(ModelAdapter):
         }
         example: dict[str, Any]
         if self.feature_names:
-            row = {name: 0 for name in self.feature_names[:8]}
+            row = dict.fromkeys(self.feature_names[:8], 0)
             example = {"instances": [row]}
         else:
             example = {"instances": [{"x": 0.0}]}
@@ -161,7 +161,7 @@ class SklearnAdapter(ModelAdapter):
 
 def _pickle_load(path: str) -> Any:
     with open(path, "rb") as fh:
-        return pickle.load(fh)  # noqa: S301 - trusted artifact from the owner's registry
+        return pickle.load(fh)
 
 
 def _looks_like_indices(raw: Any) -> bool:
@@ -170,7 +170,7 @@ def _looks_like_indices(raw: Any) -> bool:
 
         arr = np.asarray(raw)
         return arr.dtype.kind in "iu"
-    except Exception:  # noqa: BLE001 - numpy missing or non-array output
+    except Exception:
         return all(isinstance(v, int) and not isinstance(v, bool) for v in list(raw)[:5]) if hasattr(
             raw, "__iter__"
         ) else isinstance(raw, int)

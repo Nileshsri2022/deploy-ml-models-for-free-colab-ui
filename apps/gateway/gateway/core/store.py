@@ -14,12 +14,14 @@ Durability rules:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, Callable, Iterable, TypeVar
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
@@ -60,10 +62,8 @@ class JsonStore:
                     data = loaded
             except (json.JSONDecodeError, OSError):
                 # Corrupt file: quarantine it instead of losing the rest of the system.
-                try:
+                with contextlib.suppress(OSError):  # pragma: no cover
                     path.rename(path.with_suffix(f".corrupt-{int(time.time())}.json"))
-                except OSError:  # pragma: no cover
-                    pass
         self._cache[collection] = data
         return data
 

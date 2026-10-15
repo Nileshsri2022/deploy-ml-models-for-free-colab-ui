@@ -16,17 +16,26 @@ raising.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from colabdeploy_shared.enums import AdapterKind, DeploymentState
 from colabdeploy_shared.schemas import ArtifactSpec, DesiredState
 
-from .adapters import AdapterError, ModelAdapter, ModelMeta, available_adapters, load_with_probe, resolve_adapter
+from .adapters import (
+    AdapterError,
+    ModelAdapter,
+    ModelMeta,
+    available_adapters,
+    load_with_probe,
+    resolve_adapter,
+)
 from .artifacts import ArtifactCache, ArtifactError, ArtifactResolver, ResolvedArtifact
 
 LogFn = Callable[[str, str, dict[str, Any]], None]
@@ -199,7 +208,7 @@ class ModelStore:
                     self._log(f"auto-detect notes for {key}: {'; '.join(errors[:3])}", "debug")
         except AdapterError as exc:
             return self._fail(result, meta, f"load: {exc}", started, artifact=artifact)
-        except Exception as exc:  # noqa: BLE001 - unexpected framework blowup
+        except Exception as exc:
             return self._fail(result, meta, f"load: {type(exc).__name__}: {exc}", started, artifact=artifact)
 
         # 3) warm up
@@ -209,7 +218,7 @@ class ModelStore:
             try:
                 warmup_ms = adapter.warmup(sample)
                 self.counters["warmups"] += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 self.counters["warmup_failures"] += 1
                 self._log(f"warm-up failed for {key}: {exc}", "warning")
         adapter.health.warmup_ms = warmup_ms
@@ -236,7 +245,7 @@ class ModelStore:
         result.elapsed_ms = _ms(started)
         self._log(
             f"loaded {key} with {result.adapter}"
-            + (f" (artifact from cache)" if artifact.from_cache else "")
+            + (" (artifact from cache)" if artifact.from_cache else "")
             + f" in {result.elapsed_ms:.0f} ms"
             + (f", warm-up {warmup_ms:.0f} ms" if warmup_ms else ""),
             "info",
@@ -267,10 +276,10 @@ class ModelStore:
             key, loaded = next(iter(self._pool.items()))
             self._pool.pop(key, None)
             self.counters["evictions"] += 1
-            try:
+            # Eviction must never raise: losing a model is recoverable, breaking
+            # the reconcile loop is not.
+            with contextlib.suppress(Exception):
                 loaded.adapter.unload()
-            except Exception:  # noqa: BLE001 - eviction must not raise
-                pass
             self._log(f"evicted {key} from the warm pool (max_loaded={self.max_loaded})", "info")
 
     def unload(self, key: str) -> bool:
@@ -278,10 +287,8 @@ class ModelStore:
             loaded = self._pool.pop(key, None)
         if loaded is None:
             return False
-        try:
+        with contextlib.suppress(Exception):
             loaded.adapter.unload()
-        except Exception:  # noqa: BLE001
-            pass
         self._log(f"unloaded {key}", "info")
         return True
 
@@ -336,7 +343,7 @@ class ModelStore:
             loaded.touch()
             self.counters["warmups"] += 1
             self._log(f"warm-up from hot cache key for {loaded.key} took {elapsed:.0f} ms", "debug")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.counters["warmup_failures"] += 1
             self._log(f"warm-up from cache key failed for {loaded.key}: {exc}", "warning")
 
@@ -351,7 +358,7 @@ class ModelStore:
         started = time.perf_counter()
         try:
             output = loaded.adapter.predict(payload)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             loaded.errors += 1
             loaded.adapter.record_prediction(False, str(exc))
             loaded.last_error = str(exc)[:500]

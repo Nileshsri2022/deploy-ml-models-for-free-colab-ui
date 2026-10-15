@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 TEST_ADMIN_KEY = "CDP_API_test_admin_key_0000000000"
 TEST_RUNTIME_LABEL = "pytest-runtime"
@@ -28,7 +29,7 @@ def wait_for(
         attempts += 1
         try:
             last = predicate()
-        except Exception as exc:  # noqa: BLE001 - a transient 404 mid-setup is fine
+        except Exception as exc:
             last = f"raised {type(exc).__name__}: {exc}"
         else:
             if last:

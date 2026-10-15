@@ -19,12 +19,14 @@ to conflict with Google's usage policy. The README says so plainly.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import platform
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 LogFn = Callable[[str, str], None]
 
@@ -116,7 +118,7 @@ class KeepAlive:
         while not self._stop.wait(interval):
             try:
                 self._tick()
-            except Exception as exc:  # noqa: BLE001 - keep-alive must never die
+            except Exception as exc:
                 self.state.errors += 1
                 self.log(f"keep-alive tick failed: {exc}", "warning")
 
@@ -143,10 +145,9 @@ class KeepAlive:
             )
             if self.on_session_warning is not None and not self._warned:
                 self._warned = True
-                try:
+                # A broken warning callback must not kill the keep-alive thread.
+                with contextlib.suppress(Exception):
                     self.on_session_warning(remaining_min * 60.0)
-                except Exception:  # noqa: BLE001
-                    pass
 
     # ------------------------------------------------------------------ #
     def inject_browser_activity(self) -> bool:
@@ -173,11 +174,11 @@ class KeepAlive:
                 f"{interval_ms}"
                 ");})();</script>"
             )
-            display(HTML(html))  # noqa: F821 - provided by IPython
+            display(HTML(html))
             self.state.browser_injected = True
             self.log("browser keep-alive injected (opt-in)", "info")
             return True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.log(f"browser keep-alive unavailable: {exc}", "debug")
             return False
 

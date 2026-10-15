@@ -10,15 +10,11 @@ import json
 import threading
 from pathlib import Path
 
-import pytest
-
 from colabdeploy_shared.enums import AdapterKind, DeploymentState
 from colabdeploy_shared.schemas import (
     ArtifactSpec,
     DeploymentInfo,
-    EndpointCreate,
     EndpointInfo,
-    ModelCreate,
     ModelInfo,
     ModelSchema,
 )

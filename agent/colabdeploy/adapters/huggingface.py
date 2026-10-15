@@ -77,7 +77,7 @@ class HuggingFaceAdapter(ModelAdapter):
         except ImportError:
             self.pipe = pipeline(self.task, model=self.repo, **kwargs)
             self.device = "cpu"
-        except Exception as exc:  # noqa: BLE001 - HF raises OSError/ValueError/HTTP errors
+        except Exception as exc:
             raise AdapterError(
                 f"could not build pipeline for task '{self.task}' on '{self.repo}': {exc}",
                 hint="check the repo id, that the task matches the model, and that the VM has "
@@ -92,13 +92,13 @@ class HuggingFaceAdapter(ModelAdapter):
     # ------------------------------------------------------------------ #
     def _input(self, payload: dict[str, Any]) -> Any:
         task = self.task
-        if task in ("image-classification", "object-detection", "image-segmentation", "depth-estimation"):
-            if "image" in payload or "image_b64" in payload:
-                import io
+        vision = ("image-classification", "object-detection", "image-segmentation", "depth-estimation")
+        if task in vision and ("image" in payload or "image_b64" in payload):
+            import io
 
-                from PIL import Image  # type: ignore
+            from PIL import Image  # type: ignore
 
-                return Image.open(io.BytesIO(payload_image_bytes(payload)))
+            return Image.open(io.BytesIO(payload_image_bytes(payload)))
         if "text" in payload and isinstance(payload["text"], list):
             return payload["text"]
         if task in ("text-generation", "text2text-generation", "summarization", "translation", "question-answering"):
@@ -121,7 +121,7 @@ class HuggingFaceAdapter(ModelAdapter):
             raw = self.model(data, **kwargs)
         except AdapterError:
             raise
-        except Exception as exc:  # noqa: BLE001 - runtime shape/OOM/tokenizer errors
+        except Exception as exc:
             raise AdapterError(
                 f"pipeline '{self.task}' failed: {exc}",
                 hint="reduce max_length/batch size, or check the input matches the task",
@@ -153,7 +153,7 @@ class HuggingFaceAdapter(ModelAdapter):
         return ModelSchema(
             fields=fields,
             required=list(fields)[:1],
-            example={k: "…" for k in fields},
+            example=dict.fromkeys(fields, "…"),
             description=f"HF {self.task} pipeline on {self.repo}",
         )
 
@@ -165,7 +165,7 @@ class HuggingFaceAdapter(ModelAdapter):
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     @classmethod

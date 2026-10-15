@@ -21,15 +21,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from colabdeploy_shared.enums import DeploymentState, JobState, RuntimeState
-from colabdeploy_shared.protocol import HelloFrame, HeartbeatFrame, AckFrame, LogFrame
+from colabdeploy_shared.protocol import AckFrame, HeartbeatFrame, HelloFrame, LogFrame
 from colabdeploy_shared.schemas import (
-    DeploymentInfo,
-    enum_value,
     DesiredDeployment,
     DesiredState,
     JobInfo,
     RuntimeCapabilities,
     RuntimeInfo,
+    enum_value,
     utcnow,
 )
 from gateway.core.cache import CacheBackend
@@ -229,8 +228,7 @@ class RuntimeManager:
             matches = dep.model_id == model_id and (
                 version == "" or dep.model_version == int(version or 0)
             )
-            if matches:
-                if dep.state != DeploymentState.READY:
+            if matches and dep.state != DeploymentState.READY:
                     self.registry.store.update(
                         "deployments",
                         dep.id,
@@ -353,7 +351,7 @@ class RuntimeManager:
                 await self.supervise_once()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - supervision must never die
+            except Exception as exc:
                 self.telemetry.log(f"supervisor error: {exc}", level="error")
             await asyncio.sleep(self._supervise_interval_s)
 

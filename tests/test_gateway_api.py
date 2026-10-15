@@ -13,10 +13,9 @@ from typing import Any
 
 import pytest
 
-from colabdeploy_shared.enums import AdapterKind, DegradationMode, DeploymentState
+from colabdeploy_shared.enums import DeploymentState
 from colabdeploy_shared.protocol import ExecResponseFrame
-from colabdeploy_shared.schemas import ModelCreate, ModelSchema, ArtifactSpec
-from gateway.services.relay import AgentTimeout, RelayConnection, RelayError, RuntimeOffline
+from gateway.services.relay import AgentTimeout, RelayConnection
 
 RUNTIME_ID = "rt_test"
 ADMIN_KEY = "CDP_API_test_admin_key_0000000000"  # matches tests/conftest.py
@@ -48,7 +47,7 @@ def stub_runtime(state: Any):
     runtime_id = record["runtime_id"]
     socket = StubSocket()
     conn = RelayConnection(runtime_id=runtime_id, ws=socket, agent_version="0.1.0-test")  # type: ignore[arg-type]
-    state.relay._conns[runtime_id] = conn  # noqa: SLF001 - test-only injection
+    state.relay._conns[runtime_id] = conn
     state.registry.store.update(
         "runtimes", runtime_id, {"state": "online", "loaded_models": []}
     )
@@ -253,6 +252,7 @@ def test_redeploy_supersedes_the_previous_deployment(api: Any, stub_runtime: Any
 def test_rollback_repoints_the_endpoint(api: Any, stub_runtime: Any) -> None:
     first = deploy_echo(api, route="roll")
     model_id = first["model"]["id"]
+    assert first["endpoint"]["model_version"] == 1
     v2 = api.post("/api/models", json={
         "name": "roll", "adapter": "echo", "artifact": {"uri": "inline:{}"}}).json()
     assert v2["version"] == 2
@@ -262,6 +262,8 @@ def test_rollback_repoints_the_endpoint(api: Any, stub_runtime: Any) -> None:
     rolled = api.post(f"/api/endpoints/{first['endpoint']['id']}/rollback?model_version=1")
     assert rolled.status_code == 200, rolled.text
     assert rolled.json()["endpoint"]["model_version"] == 1
+    # A rollback repins the version, it does not switch models.
+    assert rolled.json()["endpoint"]["model_id"] == model_id
 
     missing = api.post(f"/api/endpoints/{first['endpoint']['id']}/rollback?model_version=99")
     assert missing.status_code == 404
@@ -532,7 +534,7 @@ async def test_queued_job_drains_when_a_runtime_returns(api: Any, stub_runtime: 
 
     # Runtime comes back with the model loaded.
     calls = serve_with(state, {"label": "drained"})
-    state.relay._conns[stub_runtime["runtime_id"]] = RelayConnection(  # noqa: SLF001
+    state.relay._conns[stub_runtime["runtime_id"]] = RelayConnection(
         runtime_id=stub_runtime["runtime_id"], ws=StubSocket()  # type: ignore[arg-type]
     )
     state.registry.deployments.patch(
@@ -832,7 +834,7 @@ def test_pick_runtime_is_stable_across_calls(api: Any, state: Any) -> None:
     ids = []
     for index in range(3):
         record = AuthService(state.registry).create_runtime_token(f"rt-{index}", 1.0)
-        state.relay._conns[record["runtime_id"]] = RelayConnection(  # noqa: SLF001
+        state.relay._conns[record["runtime_id"]] = RelayConnection(
             runtime_id=record["runtime_id"], ws=StubSocket()  # type: ignore[arg-type]
         )
         ids.append(record["runtime_id"])
@@ -879,7 +881,7 @@ def test_session_cap_warning_sets_an_actionable_error(api: Any, stub_runtime: An
 
 
 def test_reconcile_endpoint_requires_a_live_tunnel(api: Any, stub_runtime: Any, state: Any) -> None:
-    result = deploy_echo(api, route="reconcile-me")
+    deploy_echo(api, route="reconcile-me")
     state.relay._conns.pop(stub_runtime["runtime_id"], None)
     response = api.post(f"/api/runtimes/{stub_runtime['runtime_id']}/reconcile")
     assert response.status_code == 503

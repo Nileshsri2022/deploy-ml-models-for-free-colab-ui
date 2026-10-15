@@ -22,7 +22,6 @@ from colabdeploy_shared.schemas import (
     HealthResponse,
     InferenceResponse,
     JobCreate,
-    JobInfo,
     PredictRequest,
     StatusResponse,
 )

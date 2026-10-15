@@ -55,7 +55,7 @@ class XGBoostAdapter(ModelAdapter):
         booster = xgb.Booster()
         try:
             booster.load_model(str(artifact_path))
-        except Exception as exc:  # noqa: BLE001 - xgboost raises xgb.core.XGBoostError
+        except Exception as exc:
             raise AdapterError(
                 f"xgboost could not load '{artifact_path.name}': {exc}",
                 hint="save with booster.save_model('m.json') or model.save_model('m.ubj')",
@@ -64,7 +64,7 @@ class XGBoostAdapter(ModelAdapter):
         self.is_booster = True
         try:
             self.feature_names = list(booster.feature_names or []) or None
-        except Exception:  # noqa: BLE001
+        except Exception:
             self.feature_names = None
         self.mark_loaded(meta, artifact_path)
 
@@ -90,7 +90,7 @@ class XGBoostAdapter(ModelAdapter):
         try:
             matrix = xgb.DMatrix(array, feature_names=self.feature_names or columns)
             raw = self.model.predict(matrix)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise AdapterError(f"xgboost predict failed: {exc}") from exc
 
         values = jsonable(raw)
@@ -108,7 +108,7 @@ class XGBoostAdapter(ModelAdapter):
 
     def describe(self) -> ModelSchema:
         features = self.feature_names or []
-        row = {name: 0.0 for name in features[:8]} or {"f0": 0.0}
+        row = dict.fromkeys(features[:8], 0.0) or {"f0": 0.0}
         return ModelSchema(
             fields={"instances": {"type": "array"}, "columns": {"type": "array"}, "data": {"type": "array"}},
             required=["instances"],

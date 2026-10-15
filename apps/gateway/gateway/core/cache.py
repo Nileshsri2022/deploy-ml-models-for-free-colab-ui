@@ -23,9 +23,10 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from colabdeploy_shared.schemas import CacheEntryInfo, CacheStats
 

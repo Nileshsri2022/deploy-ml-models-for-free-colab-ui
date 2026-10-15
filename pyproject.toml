@@ -1,0 +1,64 @@
+# Repository-wide tooling configuration.
+#
+# This is a monorepo of three installable Python packages - `packages/shared-schema`,
+# `apps/gateway` and `agent` - each with its own `pyproject.toml`. This file is
+# deliberately NOT a package: it exists so `ruff check .` and `ruff format .` behave
+# identically everywhere, from the repo root or from a subdirectory.
+#
+# Development setup:
+#   python -m venv .venv && . .venv/bin/activate
+#   pip install -e packages/shared-schema -e apps/gateway -e agent
+#   pip install pytest ruff
+#   pytest tests/ -q
+#
+# Pytest itself is configured in `pytest.ini` (one config file, no surprises).
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    ".data",
+    "apps/ui",          # TypeScript; has its own tsconfig + eslint-free strictness
+    "docs",
+    "deploy",
+]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",     # pycodestyle
+    "F",          # pyflakes
+    "I",          # isort
+    "UP",         # pyupgrade
+    "B",          # bugbear - mutable defaults, except-pass, walrus misuse
+    "C4",         # comprehensions
+    "SIM",        # simplifications
+    "RET",        # return checks
+    "RUF",        # ruff-specific (unused noqa, mutable class attrs)
+]
+ignore = [
+    "E501",       # line length is handled by the formatter; long prose/docstrings are fine
+    "B008",       # FastAPI's Depends()/Query() in defaults is the framework's idiom
+    "B904",       # raise ... from exc: too noisy across adapter error wrapping
+    "RET504",     # `result = x; return result` reads better in the relay/inference paths
+    "SIM108",     # ternaries are not always clearer than an if/else
+    "RUF012",     # mutable class-level defaults are intentional in the adapter registry
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "B011",       # assert False is fine in a test
+    "SIM300",     # yoda conditions in assertions read naturally
+]
+"agent/colabdeploy/adapters/*" = [
+    "B009", "B010",  # getattr/setattr with a computed framework attribute name
+]
+"apps/gateway/gateway/api/*" = [
+    "B008",       # Depends(...) defaults
+]
+"scripts/*" = [
+    "B008",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["colabdeploy", "colabdeploy_shared", "gateway"]
+combine-as-imports = true

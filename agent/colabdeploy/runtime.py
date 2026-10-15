@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import platform
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -131,7 +132,7 @@ class AgentRuntime:
                 "loaded": self.store.keys,
                 "agent_ms": round((time.perf_counter() - started) * 1000, 2),
             }
-        except Exception as exc:  # noqa: BLE001 - one bad request must not kill the agent
+        except Exception as exc:
             self.counters["errors"] += 1
             return 500, {
                 "code": "AGENT_ERROR",
@@ -184,7 +185,7 @@ class AgentRuntime:
                          "routes": sorted(self._routes)}
         try:
             result = handler(body if isinstance(body, dict) else {})
-        except Exception as exc:  # noqa: BLE001 - never propagate into the tunnel
+        except Exception as exc:
             self.counters["errors"] += 1
             return 500, {"code": "AGENT_ERROR", "error": f"{type(exc).__name__}: {exc}"}
         if isinstance(result, tuple):

@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import os
 import sys
-import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 

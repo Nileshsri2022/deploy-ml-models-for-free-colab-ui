@@ -18,8 +18,9 @@ import contextlib
 import os
 import time
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -28,9 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from gateway import __version__
-from gateway.api import internal as internal_api
-from gateway.api import management as management_api
-from gateway.api import v1 as v1_api
+from gateway.api import internal as internal_api, management as management_api, v1 as v1_api
 from gateway.api.deps import app_state
 from gateway.core.config import get_settings
 from gateway.state import AppState, build_state, set_state

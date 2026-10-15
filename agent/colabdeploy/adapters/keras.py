@@ -11,13 +11,21 @@ produces an actionable hint instead of a traceback in the Colab output.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
 from colabdeploy_shared.enums import AdapterKind
 from colabdeploy_shared.schemas import ArtifactSpec, ModelSchema
 
-from .base import AdapterError, ModelAdapter, ModelMeta, jsonable, payload_image_bytes, payload_table
+from .base import (
+    AdapterError,
+    ModelAdapter,
+    ModelMeta,
+    jsonable,
+    payload_image_bytes,
+    payload_table,
+)
 
 
 class KerasAdapter(ModelAdapter):
@@ -48,13 +56,11 @@ class KerasAdapter(ModelAdapter):
             raise AdapterError(f"artifact not found: {artifact_path}")
 
         try:
-            if artifact_path.is_dir():
-                model = keras.models.load_model(str(artifact_path))
-            elif (artifact_path / "saved_model.pb").exists():
+            if artifact_path.is_dir() or (artifact_path / "saved_model.pb").exists():
                 model = keras.models.load_model(str(artifact_path))
             else:
                 model = keras.models.load_model(str(artifact_path), compile=False)
-        except Exception as exc:  # noqa: BLE001 - keras raises many types
+        except Exception as exc:
             raise AdapterError(
                 f"keras could not load '{artifact_path.name}': {exc}",
                 hint="was it saved with model.save('m.keras') / model.save('m.h5')?",
@@ -92,10 +98,10 @@ class KerasAdapter(ModelAdapter):
 
         expected_rank = len(self.input_shape)
         if expected_rank and array.ndim != expected_rank:
-            try:
+            # A reshape that cannot work simply leaves the array as it was; the
+            # call below then fails with a shape error that says something useful.
+            with contextlib.suppress(ValueError):
                 array = array.reshape((1, *array.shape)) if array.ndim == expected_rank - 1 else array
-            except ValueError:  # pragma: no cover
-                pass
         return array
 
     def predict(self, payload: dict[str, Any]) -> Any:
@@ -110,7 +116,7 @@ class KerasAdapter(ModelAdapter):
             )
         try:
             raw = fn(array, verbose=0) if task.startswith("predict") else fn(array)
-        except Exception as exc:  # noqa: BLE001 - shape mismatches are common
+        except Exception as exc:
             raise AdapterError(
                 f"keras {task} failed: {exc}",
                 hint=f"model input shape {self.input_shape}, got {jsonable(list(getattr(array,'shape',[])))}",

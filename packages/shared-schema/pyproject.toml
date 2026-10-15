@@ -16,11 +16,3 @@ dev = ["pytest>=8", "ruff>=0.5"]
 
 [tool.setuptools.packages.find]
 include = ["colabdeploy_shared*"]
-
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
-ignore = ["E501", "B008"]

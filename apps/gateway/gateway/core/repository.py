@@ -6,8 +6,9 @@ Pydantic model on read, so the API layer never hand-rolls ``dict.get`` chains.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Any, Iterable, Type, TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -15,7 +16,6 @@ from colabdeploy_shared.enums import DeploymentState, JobState, RuntimeState
 from colabdeploy_shared.schemas import (
     ApiKeyInfo,
     DeploymentInfo,
-    DesiredDeployment,
     EndpointInfo,
     JobInfo,
     ModelInfo,
@@ -45,7 +45,7 @@ class Repository:
     """Base CRUD helper for one collection + one Pydantic type."""
 
     collection = "items"
-    model: Type[BaseModel] = BaseModel
+    model: type[BaseModel] = BaseModel
 
     def __init__(self, store: JsonStore) -> None:
         self.store = store

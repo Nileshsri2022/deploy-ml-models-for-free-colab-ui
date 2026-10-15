@@ -14,8 +14,9 @@ import asyncio
 import json
 import time
 from collections import deque
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any
 
 from colabdeploy_shared.schemas import LogLine, MetricSample, utcnow
 
@@ -82,7 +83,7 @@ class Telemetry:
         for raw in lines:
             try:
                 line = LogLine.model_validate({**raw, "runtime_id": runtime_id, "source": "agent"})
-            except Exception:  # noqa: BLE001 - never let a bad log line kill the socket
+            except Exception:
                 line = LogLine(
                     runtime_id=runtime_id,
                     source="agent",
@@ -113,7 +114,7 @@ class Telemetry:
         if not self.latency_ms:
             return 0.0
         ordered = sorted(self.latency_ms)
-        idx = min(len(ordered) - 1, max(0, int(round((p / 100.0) * (len(ordered) - 1)))))
+        idx = min(len(ordered) - 1, max(0, round((p / 100.0) * (len(ordered) - 1))))
         return round(ordered[idx], 2)
 
     def summary(self) -> dict[str, Any]:

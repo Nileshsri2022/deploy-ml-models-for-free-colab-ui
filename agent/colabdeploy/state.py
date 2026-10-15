@@ -7,7 +7,8 @@ results the gateway expects in an ``ack`` frame.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from colabdeploy_shared.schemas import DesiredDeployment, DesiredState
 

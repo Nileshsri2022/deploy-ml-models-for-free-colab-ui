@@ -1,0 +1,56 @@
+# Fly.io — https://fly.io/docs/reference/configuration/
+#
+#   fly launch --copy-config --no-deploy --path deploy
+#   fly volumes create cdp_data --size 1 --region <your-region>
+#   fly secrets set CDP_ADMIN_KEY="CDP_API_$(openssl rand -hex 16)" \
+#                   CDP_PUBLIC_URL="https://<your-app>.fly.dev"
+#   fly deploy --dockerfile deploy/Dockerfile
+#
+# A volume matters more here than on most apps: the registry, uploaded artifacts
+# and the cache snapshot are all under /data, and Fly machines are otherwise
+# ephemeral. Keep one worker — the relay holds websockets in-process.
+
+app = "colabdeploy"
+primary_region = "ams"
+
+[build]
+  dockerfile = "../deploy/Dockerfile"
+
+[env]
+  CDP_HOST = "0.0.0.0"
+  CDP_PORT = "8000"
+  CDP_DATA_DIR = "/data"
+  CDP_UI_DIST = "/app/apps/ui/dist"
+  CDP_CACHE_BACKEND = "memory"
+  CDP_CACHE_PERSIST = "1"
+  CDP_REQUIRE_AUTH = "1"
+  CDP_HEARTBEAT_S = "15"
+  CDP_SESSION_MAX_HOURS = "12"
+
+[mounts]
+  source = "cdp_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = false     # a stopped machine drops every tunnel
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 200
+    soft_limit = 150
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "15s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

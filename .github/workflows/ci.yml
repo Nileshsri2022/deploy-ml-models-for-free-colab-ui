@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A pushed branch supersedes its own in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------------- #
+  # Python: lint + the whole suite, including the real-tunnel end-to-end tests.
+  # No ML frameworks are installed on purpose - the adapters must degrade to
+  # "unavailable" rather than fail to import, and CI is what proves it.
+  # ------------------------------------------------------------------------- #
+  python:
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install the three packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e packages/shared-schema -e apps/gateway -e agent
+          pip install pytest ruff
+
+      - name: Ruff
+        run: ruff check . --output-format=github
+
+      - name: Import smoke test
+        run: |
+          python -c "import colabdeploy_shared, gateway.main, colabdeploy; print('imports ok')"
+          python -c "from colabdeploy.adapters import available_adapters; print('adapters:', available_adapters())"
+
+      - name: Pytest
+        run: pytest tests/ -q --durations=10
+
+  # ------------------------------------------------------------------------- #
+  # UI: type-check and build. `npm run build` runs `tsc -b` first, so a type
+  # error fails the job before Vite ever bundles anything.
+  # ------------------------------------------------------------------------- #
+  ui:
+    name: ui (node 22)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/ui
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/ui/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Type-check + build
+        run: npm run build
+
+      - name: Check the bundle is servable
+        run: |
+          test -f dist/index.html
+          test -d dist/assets
+          echo "built $(du -sh dist | cut -f1) of static assets"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/ui/dist
+          retention-days: 7
+
+  # ------------------------------------------------------------------------- #
+  # The deployment image, built but not pushed: catches a broken Dockerfile
+  # before it becomes a failed deploy on Render/Fly. Main only, to keep PR CI fast.
+  # ------------------------------------------------------------------------- #
+  docker:
+    name: docker image
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [python, ui]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          tags: colabdeploy:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

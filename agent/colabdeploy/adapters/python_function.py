@@ -18,8 +18,9 @@ says so at deploy time. We still keep the blast radius sane:
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from colabdeploy_shared.enums import AdapterKind
 from colabdeploy_shared.schemas import ArtifactSpec, ModelSchema
@@ -59,7 +60,7 @@ class PythonFunctionAdapter(ModelAdapter):
         namespace: dict[str, Any] = {"__name__": "colabdeploy_user_code"}
         try:
             compiled = compile(source, f"<model:{meta.model_id}>", "exec")
-            exec(compiled, namespace)  # noqa: S102 - documented, user-owned runtime
+            exec(compiled, namespace)
         except SyntaxError as exc:
             raise AdapterError(
                 f"custom code has a syntax error at line {exc.lineno}: {exc.msg}",
@@ -94,7 +95,7 @@ class PythonFunctionAdapter(ModelAdapter):
             result = _call_flexibly(self._fn, payload, self.model, self.meta)
         except AdapterError:
             raise
-        except Exception as exc:  # noqa: BLE001 - user code, report it, keep serving
+        except Exception as exc:
             raise AdapterError(
                 f"custom predict() raised {type(exc).__name__}: {exc}",
                 hint=f"after {int((time.perf_counter() - started) * 1000)} ms",

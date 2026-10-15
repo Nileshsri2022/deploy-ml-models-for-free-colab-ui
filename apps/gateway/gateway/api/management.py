@@ -531,7 +531,7 @@ async def recent_logs(
     state = app_state(request)
     lines = [
         line
-        for line in reversed(list(state.telemetry.logs._items))  # noqa: SLF001 - bounded ring read
+        for line in reversed(list(state.telemetry.logs._items))
         if (level is None or line.level == level) and (runtime_id is None or line.runtime_id == runtime_id)
     ][:limit]
     return {"count": len(lines), "logs": [ln.model_dump(mode="json") for ln in lines]}

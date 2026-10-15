@@ -1,0 +1,44 @@
+# Render blueprint — https://render.com/docs/blueprint-spec
+#
+# New → Blueprint → point at this repo. Render picks this file up automatically.
+#
+# Free-tier notes:
+# * the free web service spins down after 15 min idle and cold-starts in ~30 s.
+#   The registry and cache snapshot live on the instance disk, so a spin-down that
+#   recycles the container loses them unless you attach a disk (paid plans) or
+#   accept re-registering your models. Endpoints and keys are cheap to recreate;
+#   the agent re-attaches by itself either way.
+# * websockets are supported on free web services, which is what the relay needs.
+# * set CDP_PUBLIC_URL to the rendered hostname so generated curl snippets and the
+#   Colab relaunch link use the public URL rather than an internal one.
+
+services:
+  - type: web
+    name: colabdeploy
+    runtime: docker
+    plan: free
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: CDP_ADMIN_KEY
+        sync: false            # prompt on first deploy; never commit this
+      - key: CDP_PUBLIC_URL
+        sync: false            # e.g. https://colabdeploy.onrender.com
+      - key: CDP_DATA_DIR
+        value: /opt/render/project/src/.data
+      - key: CDP_CACHE_BACKEND
+        value: memory
+      - key: CDP_CACHE_PERSIST
+        value: "1"
+      - key: CDP_REQUIRE_AUTH
+        value: "1"
+      - key: CDP_ALLOW_ANONYMOUS_INFERENCE
+        value: "0"
+      - key: CDP_HEARTBEAT_S
+        value: "15"
+      - key: CDP_SESSION_MAX_HOURS
+        value: "12"
+      - key: CDP_CORS_ORIGINS
+        value: "*"

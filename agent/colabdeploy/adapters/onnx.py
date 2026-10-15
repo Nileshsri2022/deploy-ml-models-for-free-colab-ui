@@ -20,7 +20,14 @@ from typing import Any
 from colabdeploy_shared.enums import AdapterKind
 from colabdeploy_shared.schemas import ArtifactSpec, ModelSchema
 
-from .base import AdapterError, ModelAdapter, ModelMeta, jsonable, payload_image_bytes, payload_table
+from .base import (
+    AdapterError,
+    ModelAdapter,
+    ModelMeta,
+    jsonable,
+    payload_image_bytes,
+    payload_table,
+)
 
 _NP_KINDS = {
     "tensor(float)": "float32",
@@ -63,7 +70,7 @@ class OnnxAdapter(ModelAdapter):
             session = ort.InferenceSession(
                 str(artifact_path), providers=providers, sess_options=_session_options()
             )
-        except Exception as exc:  # noqa: BLE001 - onnxruntime raises many types
+        except Exception as exc:
             raise AdapterError(
                 f"onnxruntime could not open the model: {exc}",
                 hint="re-export with opset <= 17, or check the file is a complete .onnx graph",
@@ -103,7 +110,7 @@ class OnnxAdapter(ModelAdapter):
             array = _decode_image_np(np, raw, first_shape)
             return {self.input_specs[0]["name"]: array}
 
-        columns, rows = payload_table(payload)
+        _columns, rows = payload_table(payload)
         array = np.asarray(rows, dtype=_NP_KINDS.get(self.input_specs[0]["type"], "float32")) \
             if self.input_specs else np.asarray(rows, dtype="float32")
         if len(self.input_specs) == 1:
@@ -127,14 +134,14 @@ class OnnxAdapter(ModelAdapter):
             outputs = self.model.run(self.output_names or None, feed)
         except AdapterError:
             raise
-        except Exception as exc:  # noqa: BLE001 - runtime shape/dtype errors
+        except Exception as exc:
             raise AdapterError(
                 f"onnx inference failed: {exc}",
                 hint=f"expected inputs {jsonable(self.input_specs)}",
             ) from exc
         result: dict[str, Any] = {}
         names = self.output_names or [f"output_{i}" for i in range(len(outputs))]
-        for name, value in zip(names, outputs):
+        for name, value in zip(names, outputs, strict=False):
             result[name] = jsonable(value)
         primary = result[names[0]] if names else None
         return {
@@ -155,7 +162,7 @@ class OnnxAdapter(ModelAdapter):
             values = jsonable(outputs[0])
             if isinstance(values, list) and len(values) == len(payloads):
                 return [{"output": v} for v in values]
-        except Exception:  # noqa: BLE001 - fall back to per-item inference
+        except Exception:
             pass
         return super().predict_batch(payloads)
 
@@ -200,8 +207,9 @@ def _session_options() -> Any:
 def _decode_image_np(np: Any, raw: bytes, shape: list[Any]) -> Any:
     """Best-effort image decode without forcing a Pillow dependency at import time."""
     try:
-        from PIL import Image  # type: ignore
         import io
+
+        from PIL import Image  # type: ignore
 
         image = Image.open(io.BytesIO(raw)).convert("RGB")
         target_h = shape[2] if isinstance(shape[2], int) else image.height

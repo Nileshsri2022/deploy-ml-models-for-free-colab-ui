@@ -298,6 +298,11 @@ def test_load_with_probe_falls_through_to_echo_for_unknown_artifacts(tmp_path: P
     assert AdapterKind.ECHO.value in attempts
     assert isinstance(adapter, EchoAdapter)
     assert adapter.predict({"probe": True})["echo"] == {"probe": True}
+    # Every adapter tried before echo reports *why* it gave up - that list is what
+    # the UI shows instead of a mystery "could not load" error.
+    assert errors, "expected the earlier attempts to explain themselves"
+    assert all(": " in error for error in errors)  # each one is "kind: reason"
+    assert not any(error.startswith(f"{AdapterKind.ECHO.value}:") for error in errors)
 
 
 def test_load_with_probe_succeeds_for_an_echo_artifact(tmp_path: Path) -> None:
@@ -307,6 +312,7 @@ def test_load_with_probe_succeeds_for_an_echo_artifact(tmp_path: Path) -> None:
     adapter, errors = load_with_probe(artifact, meta)
     assert isinstance(adapter, EchoAdapter)
     assert adapter.predict({"ok": True})["echo"] == {"ok": True}
+    assert errors == []  # an explicit adapter kind does not probe, so nothing failed
 
 
 # --------------------------------------------------------------------------- #
@@ -356,7 +362,7 @@ def test_jsonable_handles_everything_a_model_might_return() -> None:
         def __repr__(self) -> str:
             return "<fake>"
 
-    assert jsonable({"a": [1, (2, 3), {4, 4}, None, True]}) == {
+    assert jsonable({"a": [1, (2, 3), {4}, None, True]}) == {
         "a": [1, [2, 3], [4], None, True]
     }
     assert jsonable(b"abc") == "abc"

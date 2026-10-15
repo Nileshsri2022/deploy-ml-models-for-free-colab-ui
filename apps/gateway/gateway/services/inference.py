@@ -24,7 +24,6 @@ from typing import Any
 from colabdeploy_shared.enums import DegradationMode, JobState
 from colabdeploy_shared.schemas import (
     EndpointInfo,
-    enum_value,
     InferenceError,
     InferenceResponse,
     JobInfo,
@@ -420,7 +419,7 @@ class InferenceService:
                 )
             except InferenceFailure:
                 pass  # still offline - the stale entry keeps serving
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 self.telemetry.log(f"swr refresh failed: {exc}", level="warning")
 
         try:

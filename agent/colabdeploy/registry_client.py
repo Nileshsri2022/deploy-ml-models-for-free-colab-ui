@@ -9,6 +9,7 @@ scoped to a single ``runtime_id`` and revocable from the UI.
 
 from __future__ import annotations
 
+import contextlib
 import platform
 import time
 from dataclasses import dataclass, field
@@ -177,10 +178,8 @@ class GatewayClient:
             return {"status": "unreachable", "gateway_url": self.gateway_url}
 
     def close(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._client.close()
-        except Exception:  # noqa: BLE001
-            pass
 
 
 def _error_message(response: httpx.Response) -> str:

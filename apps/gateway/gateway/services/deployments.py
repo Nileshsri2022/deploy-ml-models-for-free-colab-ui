@@ -25,13 +25,13 @@ from colabdeploy_shared.enums import (
 )
 from colabdeploy_shared.schemas import (
     ArtifactSpec,
-    enum_value,
     DeploymentInfo,
     EndpointCreate,
     EndpointInfo,
     ModelCreate,
     ModelInfo,
     ModelSchema,
+    enum_value,
     utcnow,
 )
 from colabdeploy_shared.utils import sha256_file, short_id

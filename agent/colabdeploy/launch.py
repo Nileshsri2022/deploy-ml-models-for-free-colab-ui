@@ -26,6 +26,7 @@ notebook stays interactive; pass ``block=True`` to keep the cell attached.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -45,7 +46,7 @@ from .tunnel import TunnelClient, TunnelConfig, ws_url_from_http
 
 __all__ = ["AgentSession", "launch", "launch_in_thread", "status", "stop"]
 
-_SESSION: "AgentSession | None" = None
+_SESSION: AgentSession | None = None
 _SESSION_LOCK = threading.RLock()
 
 
@@ -274,7 +275,7 @@ def launch(
     return session
 
 
-def _set_session(session: "AgentSession | None") -> None:
+def _set_session(session: AgentSession | None) -> None:
     global _SESSION
     with _SESSION_LOCK:
         _SESSION = session
@@ -325,7 +326,7 @@ def _available_adapters() -> list[str]:
         from .adapters import available_adapters
 
         return available_adapters()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -359,6 +360,80 @@ def _warn_session(seconds: float, quiet: bool) -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Command-line entrypoint
+# --------------------------------------------------------------------------- #
+def main(argv: list[str] | None = None) -> int:
+    """``colabdeploy-agent`` - run the agent outside a notebook.
+
+    Same code path as ``launch()``; this just makes it usable as a service on a
+    Modal/RunPod/Fly machine, a container, or a laptop. The control plane does not
+    know or care which one it is talking to, which is the point: the compute plane
+    is swappable and nothing else in the system changes.
+
+        colabdeploy-agent --gateway-url https://gw.example.com --token CDP_RT_...
+        CDP_GATEWAY_URL=... CDP_RUNTIME_TOKEN=... colabdeploy-agent   # env only
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="colabdeploy-agent",
+        description="Attach this machine to a ColabDeploy control plane as an inference runtime.",
+    )
+    parser.add_argument("--gateway-url", default=os.getenv("CDP_GATEWAY_URL", ""),
+                        help="control-plane base URL (or $CDP_GATEWAY_URL)")
+    parser.add_argument("--token", default=os.getenv("CDP_RUNTIME_TOKEN", ""),
+                        help="runtime token from the UI (or $CDP_RUNTIME_TOKEN)")
+    parser.add_argument("--label", default=None, help="how this runtime appears in the UI")
+    parser.add_argument("--workdir", default=None, help="workspace dir (default /content/.colabdeploy)")
+    parser.add_argument("--max-loaded-models", type=int, default=4,
+                        help="LRU cap on simultaneously warm models (VRAM guard)")
+    parser.add_argument("--heartbeat", type=float, default=15.0, help="heartbeat interval seconds")
+    parser.add_argument("--no-keepalive", action="store_true",
+                        help="do not run the idle-timeout keep-alive thread")
+    parser.add_argument("--browser-activity", action="store_true",
+                        help="opt-in browser-side keep-alive (Colab only; see the ToS note in the README)")
+    parser.add_argument("--quiet", action="store_true", help="only log warnings and errors")
+    parser.add_argument("--once", action="store_true",
+                        help="attach, reconcile, print status and exit (smoke test)")
+    args = parser.parse_args(argv)
+
+    if not args.gateway_url or not args.token:
+        parser.error("gateway URL and token are required (flags or $CDP_GATEWAY_URL/$CDP_RUNTIME_TOKEN)")
+
+    session = launch(
+        gateway_url=args.gateway_url,
+        token=args.token,
+        workdir=args.workdir,
+        label=args.label,
+        heartbeat_interval_s=args.heartbeat,
+        max_loaded_models=args.max_loaded_models,
+        keepalive=not args.no_keepalive,
+        browser_activity=args.browser_activity,
+        quiet=args.quiet,
+        block=False,
+    )
+
+    if args.once:
+        connected = session.tunnel.wait_connected(30.0)
+        print(json.dumps({"connected": connected, **session.status()}, indent=2, default=str))
+        session.stop()
+        return 0 if connected else 1
+
+    print(
+        "attached - ctrl-c to detach. "
+        f"models: {', '.join(session.store.keys) or '(none yet)'}",
+        flush=True,
+    )
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("\ndetaching...")
+        session.stop()
+    return 0
+
+
 def _print_summary(session: AgentSession, quiet: bool) -> None:
     if quiet:
         return
@@ -376,3 +451,7 @@ def _print_summary(session: AgentSession, quiet: bool) -> None:
     print("  next       : open the UI → Endpoints, then call")
     print(f"               POST {session.gateway_url}/v1/models/<route>/predict")
     print(line)
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI entrypoint
+    raise SystemExit(main())

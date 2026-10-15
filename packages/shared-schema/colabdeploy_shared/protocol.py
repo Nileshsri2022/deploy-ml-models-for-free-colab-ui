@@ -21,7 +21,7 @@ from __future__ import annotations
 import base64
 import json
 import uuid
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -182,19 +182,19 @@ class ErrorFrame(_Frame):
     runtime_id: str | None = None
 
 
-Frame = Union[
-    HelloFrame,
-    HelloAckFrame,
-    ExecRequestFrame,
-    ExecResponseFrame,
-    HeartbeatFrame,
-    DesiredStateFrame,
-    AckFrame,
-    LogFrame,
-    PingFrame,
-    PongFrame,
-    ErrorFrame,
-]
+Frame = (
+    HelloFrame
+    | HelloAckFrame
+    | ExecRequestFrame
+    | ExecResponseFrame
+    | HeartbeatFrame
+    | DesiredStateFrame
+    | AckFrame
+    | LogFrame
+    | PingFrame
+    | PongFrame
+    | ErrorFrame
+)
 
 FrameKind = type[Frame]
 

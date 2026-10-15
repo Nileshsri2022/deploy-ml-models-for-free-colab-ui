@@ -117,10 +117,10 @@ def _detect_colab() -> bool:
         import google.colab  # noqa: F401
 
         return True
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     # Fallback: /content exists and we look like a Colab image.
-    return os.path.isdir(COLAB_MARKER) and os.path.exists("/usr/local/lib/python3.10/dist-packages") or (
+    return (os.path.isdir(COLAB_MARKER) and os.path.exists("/usr/local/lib/python3.10/dist-packages")) or (
         os.path.isdir(COLAB_MARKER) and "COLAB_" in "".join(os.environ)
     )
 
@@ -135,7 +135,7 @@ def _colab_url() -> str | None:
 
         proxy = getattr(output, "_proxy_url", None)
         return str(proxy) if proxy else None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -153,7 +153,7 @@ def _probe_gpu() -> tuple[bool, str | None, int | None, int, str | None]:
                 int(torch.cuda.device_count()),
                 torch.version.cuda,
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     if shutil.which("nvidia-smi"):

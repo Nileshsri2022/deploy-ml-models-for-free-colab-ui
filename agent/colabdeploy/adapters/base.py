@@ -173,7 +173,7 @@ class ModelAdapter(ABC):
         started = time.perf_counter()
         try:
             self.predict(sample)
-        except Exception as exc:  # noqa: BLE001 - warm-up must never kill a deploy
+        except Exception as exc:
             self.health.last_error = f"warmup failed: {exc}"
             return round((time.perf_counter() - started) * 1000, 2)
         return round((time.perf_counter() - started) * 1000, 2)
@@ -225,26 +225,26 @@ def jsonable(value: Any) -> Any:
     if callable(item) and not hasattr(value, "shape"):
         try:
             return jsonable(item())
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     tolist = getattr(value, "tolist", None)
     if callable(tolist):
         try:
             return jsonable(tolist())
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     # pandas DataFrame / Series
     if hasattr(value, "to_dict") and hasattr(value, "columns"):
         try:
             return {"columns": list(map(str, value.columns)), "data": jsonable(value.values.tolist())}
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     if hasattr(value, "to_dict") and hasattr(value, "index"):
         try:
             return jsonable(value.to_dict())
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     return str(value)
@@ -333,7 +333,7 @@ def payload_image_bytes(payload: dict[str, Any]) -> bytes:
             text = text.split(",", 1)[1].strip()
         try:
             return base64.b64decode(text, validate=True)
-        except Exception:  # noqa: BLE001 - not base64; maybe it is a path
+        except Exception:
             pass
         candidate = Path(text).expanduser()
         if candidate.is_file():

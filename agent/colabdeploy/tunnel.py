@@ -24,21 +24,20 @@ import json
 import random
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from colabdeploy_shared.protocol import (
     AGENT_PROTOCOL_VERSION,
     AckFrame,
     DesiredStateFrame,
-    ErrorFrame,
     ExecRequestFrame,
     ExecResponseFrame,
     HeartbeatFrame,
     HelloFrame,
     LogFrame,
-    PingFrame,
     PongFrame,
     parse_frame,
 )
@@ -191,7 +190,7 @@ class TunnelClient:
     def _run(self) -> None:
         try:
             asyncio.run(self._run_async())
-        except Exception as exc:  # noqa: BLE001 - the thread must not die silently
+        except Exception as exc:
             self.log(f"tunnel crashed: {type(exc).__name__}: {exc}", "error")
 
     async def _run_async(self) -> None:
@@ -205,7 +204,7 @@ class TunnelClient:
                     backoff = self.config.reconnect_min_s
                 except asyncio.CancelledError:
                     raise
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     self.stats.last_error = f"{type(exc).__name__}: {exc}"
                     self.stats.errors += 1
                     self.log(f"tunnel error: {self.stats.last_error}", "warning")
@@ -286,7 +285,7 @@ class TunnelClient:
             from .adapters import available_adapters
 
             return available_adapters()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return []
 
     async def _receive_loop(self, ws: Any) -> None:
@@ -335,7 +334,7 @@ class TunnelClient:
         def run() -> None:
             try:
                 worker(frame)
-            except Exception as exc:  # noqa: BLE001 - one bad frame must not kill the tunnel
+            except Exception as exc:
                 self.stats.errors += 1
                 self.queue_log(f"worker error: {type(exc).__name__}: {exc}", "error")
             finally:
@@ -357,7 +356,7 @@ class TunnelClient:
                 body = json.loads(frame.body_bytes().decode("utf-8"))
         try:
             status, payload = self._handle_exec(frame.path, body, frame.method)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             status, payload = 500, {"code": "AGENT_ERROR", "error": f"{type(exc).__name__}: {exc}"}
         elapsed = (time.perf_counter() - started) * 1000
         response = ExecResponseFrame.from_bytes(
@@ -381,7 +380,7 @@ class TunnelClient:
                  "warmup_top_k": frame.warmup_top_k},
                 frame.deployments,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.queue_log(f"reconcile failed: {exc}", "error")
             results = [{"deployment_id": "", "state": "failed", "error": str(exc)}]
         elapsed = (time.perf_counter() - started) * 1000
@@ -427,7 +426,7 @@ class TunnelClient:
                 await self._send(frame)
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 # A dead heartbeat is how a healthy VM gets marked offline, so this
                 # is loud, and we keep trying instead of giving up on the session.
                 self.stats.errors += 1

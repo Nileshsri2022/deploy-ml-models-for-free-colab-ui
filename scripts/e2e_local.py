@@ -334,7 +334,7 @@ def main() -> int:
             summary = seed(base, api_key, with_agent=not args.no_agent)
         except SystemExit as exc:
             print(f"  ! {exc}")
-        except Exception as exc:  # noqa: BLE001 - a demo must not die silently
+        except Exception as exc:
             import traceback
 
             print(f"  ! seeding failed: {type(exc).__name__}: {exc}")

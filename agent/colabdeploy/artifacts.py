@@ -168,7 +168,7 @@ SUPPORTED_SCHEMES = ("file", "http", "https", "store", "gdrive", "hf", "inline")
 
 
 def uri_scheme(uri: str) -> str:
-    """Return the scheme of an artifact URI, or ``""`` for a bare local path.
+    r"""Return the scheme of an artifact URI, or ``""`` for a bare local path.
 
     Three cases matter:
 
@@ -301,18 +301,20 @@ class ArtifactResolver:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(target.suffix + ".part")
         try:
-            with httpx.Client(follow_redirects=True, timeout=self.timeout_s) as client:
-                with client.stream("GET", url) as response:
-                    if response.status_code >= 400:
-                        raise ArtifactError(f"download failed with HTTP {response.status_code}: {url}")
-                    with tmp.open("wb") as fh:
-                        for chunk in response.iter_bytes(chunk_size=1 << 20):
-                            fh.write(chunk)
+            with (
+                httpx.Client(follow_redirects=True, timeout=self.timeout_s) as client,
+                client.stream("GET", url) as response,
+            ):
+                if response.status_code >= 400:
+                    raise ArtifactError(f"download failed with HTTP {response.status_code}: {url}")
+                with tmp.open("wb") as fh:
+                    for chunk in response.iter_bytes(chunk_size=1 << 20):
+                        fh.write(chunk)
             os.replace(tmp, target)
         except ArtifactError:
             tmp.unlink(missing_ok=True)
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             tmp.unlink(missing_ok=True)
             raise ArtifactError(f"download failed: {exc}") from exc
 
@@ -330,10 +332,10 @@ class ArtifactResolver:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(target.suffix + ".part")
         try:
-            with httpx.Client(timeout=self.timeout_s, follow_redirects=True) as client:
-                with client.stream(
-                    "GET", url, headers={"X-Runtime-Token": self.runtime_token}
-                ) as response:
+            with (
+                httpx.Client(timeout=self.timeout_s, follow_redirects=True) as client,
+                client.stream("GET", url, headers={"X-Runtime-Token": self.runtime_token}) as response,
+            ):
                     if response.status_code >= 400:
                         detail = response.read()[:200].decode("utf-8", "replace")
                         raise ArtifactError(
@@ -346,7 +348,7 @@ class ArtifactResolver:
         except ArtifactError:
             tmp.unlink(missing_ok=True)
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             tmp.unlink(missing_ok=True)
             raise ArtifactError(f"store fetch failed: {exc}") from exc
 
@@ -366,7 +368,7 @@ class ArtifactResolver:
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             gdown.download(id=file_id.split("/")[-1], output=str(target), quiet=True, fuzzy=True)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ArtifactError(f"Google Drive download failed: {exc}") from exc
         if not target.exists() or target.stat().st_size == 0:
             raise ArtifactError(
@@ -389,7 +391,7 @@ class ArtifactResolver:
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             local = hf_hub_download(repo_id=repo, filename=filename)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ArtifactError(f"HuggingFace download failed for {repo}/{filename}: {exc}") from exc
         shutil.copyfile(local, target)
 

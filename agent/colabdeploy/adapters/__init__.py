@@ -21,7 +21,15 @@ from typing import Any
 from colabdeploy_shared.enums import AdapterKind
 from colabdeploy_shared.schemas import ArtifactSpec
 
-from .base import AdapterError, Health, ModelAdapter, ModelMeta, jsonable, payload_table, payload_text
+from .base import (
+    AdapterError,
+    Health,
+    ModelAdapter,
+    ModelMeta,
+    jsonable,
+    payload_table,
+    payload_text,
+)
 from .echo import EchoAdapter
 from .python_function import PythonFunctionAdapter
 
@@ -126,7 +134,7 @@ def framework_available(cls: type[ModelAdapter]) -> bool:
                 importlib.import_module(name)
                 ok = True
                 break
-            except Exception:  # noqa: BLE001 - missing optional dependency
+            except Exception:
                 continue
         if not ok:
             return False
@@ -147,7 +155,7 @@ def available_adapters() -> list[str]:
         try:
             if framework_available(cls):
                 ready.append(kind)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
     return sorted(set(ready))
 
@@ -165,7 +173,7 @@ def resolve_adapter(artifact: ArtifactSpec, meta: ModelMeta) -> ModelAdapter:
         try:
             if cls.detect(artifact, meta):
                 candidates.append(cls)
-        except Exception:  # noqa: BLE001 - a broken detect() must not block others
+        except Exception:
             continue
     if candidates:
         candidates.sort(key=lambda c: getattr(c, "priority", 100))
@@ -214,7 +222,7 @@ def load_with_probe(
             if on_attempt:
                 on_attempt(kind, False, str(exc))
             continue
-        except Exception as exc:  # noqa: BLE001 - unexpected load failure
+        except Exception as exc:
             errors.append(f"{kind}: {type(exc).__name__}: {exc}")
             if on_attempt:
                 on_attempt(kind, False, str(exc))
