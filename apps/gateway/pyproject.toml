@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "websockets>=12"]
+dev = ["pytest>=8", "ruff>=0.5", "websockets>=12"]
 
 [project.scripts]
 colabdeploy-gateway = "gateway.main:cli"
@@ -28,5 +28,8 @@ colabdeploy-gateway = "gateway.main:cli"
 include = ["gateway*"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
+# The suite is deliberately synchronous (see tests/test_gateway_api.py::run_in_app),
+# so there is no pytest-asyncio dependency. The authoritative config for a test run
+# from the repo root is `pytest.ini`; this section only helps when running pytest
+# from inside apps/gateway.
 testpaths = ["../../tests"]

@@ -469,11 +469,31 @@ def test_agent_timeout_degrades_instead_of_hanging(api: Any, stub_runtime: Any, 
     assert response.headers["X-ColabDeploy-Stale"] == "true"
 
 
+def run_in_app(api: Any, coro_fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run an app coroutine on the TestClient's *own* event loop.
+
+    ``asyncio.run()`` would spin up a second loop, and these coroutines touch
+    objects that belong to the app's loop (SSE subscriber queues, relay state).
+    Going through Starlette's blocking portal keeps the whole suite synchronous -
+    no ``pytest-asyncio`` dependency, and no ``asyncio`` marker to keep in sync
+    with the ``--strict-markers`` list in ``pytest.ini``.
+    """
+    client = api.client
+    portal = getattr(client, "portal", None)
+    if portal is not None:  # Starlette >= 1.x sets it for the whole `with` block
+        return portal.call(lambda: coro_fn(*args, **kwargs))
+
+    factory = getattr(client, "portal_factory", None)  # older Starlette
+    if factory is None:
+        raise RuntimeError("this TestClient exposes no event-loop portal")
+    with factory() as spawned:
+        return spawned.call(lambda: coro_fn(*args, **kwargs))
+
+
 # --------------------------------------------------------------------------- #
 # Resilience: the runtime disappears
 # --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-async def test_endpoint_survives_a_dead_runtime(api: Any, stub_runtime: Any, state: Any) -> None:
+def test_endpoint_survives_a_dead_runtime(api: Any, stub_runtime: Any, state: Any) -> None:
     """The headline guarantee: kill the VM, the endpoint still answers."""
     deploy_echo(api, route="survivor", cache_ttl_s=1, swr_s=3600)
     serve_with(state, {"label": "positive"})
@@ -482,7 +502,7 @@ async def test_endpoint_survives_a_dead_runtime(api: Any, stub_runtime: Any, sta
     time.sleep(1.05)  # entry goes stale; with the VM gone, stale *is* the answer
 
     # Pull the plug.
-    await state.relay.unregister(stub_runtime["runtime_id"], reason="notebook closed")
+    run_in_app(api, state.relay.unregister, stub_runtime["runtime_id"], reason="notebook closed")
     assert state.relay.is_connected(stub_runtime["runtime_id"]) is False
     runtime = state.registry.runtimes.get(stub_runtime["runtime_id"])
     assert runtime.state.value == "offline"
@@ -526,10 +546,9 @@ def test_fail_mode_returns_503_with_retry_after(api: Any, state: Any) -> None:
     assert response.headers["Retry-After"] == "5"
 
 
-@pytest.mark.asyncio
-async def test_queued_job_drains_when_a_runtime_returns(api: Any, stub_runtime: Any, state: Any) -> None:
+def test_queued_job_drains_when_a_runtime_returns(api: Any, stub_runtime: Any, state: Any) -> None:
     deploy_echo(api, route="drain", degradation="queue")
-    await state.relay.unregister(stub_runtime["runtime_id"], reason="gone")
+    run_in_app(api, state.relay.unregister, stub_runtime["runtime_id"], reason="gone")
     job_id = api.post("/v1/models/drain/predict", json={"inputs": {"text": "x"}}).json()["job_id"]
 
     # Runtime comes back with the model loaded.
@@ -542,7 +561,7 @@ async def test_queued_job_drains_when_a_runtime_returns(api: Any, stub_runtime: 
         state=DeploymentState.READY.value, runtime_id=stub_runtime["runtime_id"],
     )
 
-    await state.runtimes.supervise_once()
+    run_in_app(api, state.runtimes.supervise_once)
     job = api.get(f"/v1/jobs/{job_id}").json()
     assert job["state"] == "succeeded", job
     assert job["result"] == {"label": "drained"}
