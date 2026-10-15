@@ -49,8 +49,11 @@ so a proxy that swallows bodies still tells you what happened.
 | `AGENT_TIMEOUT` | 504 | the VM did not answer within the endpoint timeout |
 | `MODEL_ERROR` | 500 | the adapter raised; `detail` has the adapter's message |
 | `RATE_LIMITED` | 429 | over the endpoint's `rate_limit_rpm` |
+| `QUOTA_EXCEEDED` | 429 | the API key used its daily inference request allowance; resets at 00:00 UTC |
 | `STALE_RESPONSE` | 200 | served from cache while the runtime was unreachable |
 | `QUEUED` | 202 | accepted as a job; runs when a runtime returns |
+
+**Daily API-key quota.** Each authenticated API key receives up to 1,000 HTTP inference requests per UTC day by default. Calls to `predict`, `predict:batch`, and `jobs` count once each, including cache hits; a batch counts as one HTTP request, not one request per item. Anonymous requests are not charged. Set `CDP_DAILY_INFERENCE_QUOTA` on the gateway to change the default; set it to `0` to disable this quota. Usage is persisted by the gateway's local store. Exceeding the limit returns `429 QUOTA_EXCEEDED` with `Retry-After` seconds until midnight UTC and `X-ColabDeploy-Quota-Limit` / `X-ColabDeploy-Quota-Remaining` headers.
 
 **Response headers on `/v1` inference calls**
 

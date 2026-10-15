@@ -132,6 +132,7 @@ provide becomes the bootstrap key instead of a generated one.
 | `CDP_CACHE_MAX_BYTES` | fit your RAM | the cache is the thing keeping you alive during an outage |
 | `CDP_SESSION_MAX_HOURS` | `12` | drives the countdown shown in the UI |
 | `CDP_MAX_BODY_BYTES` / `CDP_MAX_BATCH` | per model | a 10 MB body limit and 64-row batch cap are the defaults |
+| `CDP_DAILY_INFERENCE_QUOTA` | `1000` | maximum authenticated inference HTTP requests per API key per UTC day; `0` disables the quota |
 
 **Run one worker.** The relay holds each tunnel's websocket in-process; `--workers 4`
 would give you four gateways that cannot see each other's runtimes, and requests

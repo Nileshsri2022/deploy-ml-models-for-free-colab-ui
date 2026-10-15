@@ -1,0 +1,63 @@
+name: Publish Python packages
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  shared:
+    name: Publish shared schema
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/colabdeploy-shared/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build
+      - run: python -m build packages/shared-schema --outdir dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  gateway:
+    name: Publish gateway
+    needs: shared
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/colabdeploy-gateway/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build
+      - run: python -m build apps/gateway --outdir dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  agent:
+    name: Publish agent
+    needs: shared
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/colabdeploy-agent/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build
+      - run: python -m build agent --outdir dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

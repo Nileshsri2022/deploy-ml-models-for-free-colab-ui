@@ -6,10 +6,26 @@ build-backend = "setuptools.build_meta"
 name = "colabdeploy-shared"
 version = "0.1.0"
 description = "Shared Pydantic contracts for the ColabDeploy control plane and Colab agent"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+
 dependencies = ["pydantic>=2.7"]
+
+[project.urls]
+Homepage = "https://github.com/Nileshsri2022/deploy-ml-models-for-free-colab-ui"
+Documentation = "https://github.com/Nileshsri2022/deploy-ml-models-for-free-colab-ui/tree/main/docs"
+Repository = "https://github.com/Nileshsri2022/deploy-ml-models-for-free-colab-ui"
+Issues = "https://github.com/Nileshsri2022/deploy-ml-models-for-free-colab-ui/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]

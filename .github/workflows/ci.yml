@@ -53,6 +53,14 @@ jobs:
       - name: Pytest
         run: pytest tests/ -q --durations=10
 
+      - name: Build and validate distributions
+        run: |
+          pip install build twine
+          python -m build packages/shared-schema --outdir dist/shared
+          python -m build apps/gateway --outdir dist/gateway
+          python -m build agent --outdir dist/agent
+          twine check dist/shared/* dist/gateway/* dist/agent/*
+
   # ------------------------------------------------------------------------- #
   # UI: type-check and build. `npm run build` runs `tsc -b` first, so a type
   # error fails the job before Vite ever bundles anything.

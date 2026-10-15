@@ -84,6 +84,9 @@ class Settings:
     max_body_bytes: int = field(default_factory=lambda: _int("CDP_MAX_BODY_BYTES", 10 * 1024 * 1024))
     max_batch_size: int = field(default_factory=lambda: _int("CDP_MAX_BATCH", 64))
     retry_after_s: int = field(default_factory=lambda: _int("CDP_RETRY_AFTER_S", 30))
+    daily_inference_quota: int = field(
+        default_factory=lambda: _int("CDP_DAILY_INFERENCE_QUOTA", 1000)
+    )
 
     # --- jobs -------------------------------------------------------------
     job_ttl_s: float = field(default_factory=lambda: _float("CDP_JOB_TTL_S", 3600.0))
