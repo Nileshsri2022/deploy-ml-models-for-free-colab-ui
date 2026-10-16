@@ -36,7 +36,27 @@ Colab: switch to a **GPU runtime** first, then run one install cell (this is the
 
 ```python
 !pip -q install -U diffusers transformers accelerate safetensors qrcode pillow
+!pip -q uninstall -y torchao        # Colab's torchao is older than diffusers expects
 ```
+
+### Pitfall: `cannot import name 'FqnToConfig' from 'torchao.quantization'`
+
+Colab preinstalls an old `torchao` (0.14.x), while current diffusers imports
+`torchao.quantization.FqnToConfig` unconditionally — and that name only exists from
+**torchao 0.15.0**. So `import diffusers` dies before this file runs a single line,
+and the agent reports it as a `MODEL_ERROR` raised by `predict()`.
+
+Fix it in Colab, in this order:
+
+```python
+!pip -q uninstall -y torchao        # recommended: diffusers only needs it for quantization
+# or, if you need torchao:
+!pip -q install -U torchao          # >= 0.15 has FqnToConfig
+```
+
+Then re-attach the runtime (`launch(...)` cell again, or `Runtimes → Reconcile` in the
+UI) and call the endpoint once more. Nothing in the deployment has to change — the model
+is already registered and deployed; only the VM's package set was wrong.
 
 On the gateway (Render → your service → Environment), raise the timeout, because a
 diffusion step is slower than the 30 s default:

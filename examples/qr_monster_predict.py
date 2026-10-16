@@ -24,10 +24,22 @@ Register it like this (Models -> Register by URI):
 Requirements on the runtime VM (one cell in Colab, plus a GPU runtime):
 
     !pip -q install -U diffusers transformers accelerate safetensors qrcode pillow
+    !pip -q uninstall -y torchao     # see the torchao note below
 
 And on the gateway, because a diffusion step is slower than the 30 s default:
 
     CDP_TIMEOUT_MS=120000      # Render -> Environment
+
+Colab pitfall (torchao): Colab preinstalls an old ``torchao`` (0.14.x) while current
+diffusers imports ``torchao.quantization.FqnToConfig`` unconditionally, and that name
+only exists from torchao 0.15.0. The result is
+
+    cannot import name 'FqnToConfig' from 'torchao.quantization'
+
+which kills ``import diffusers`` before this file runs a single line. Removing torchao
+is the safest fix (diffusers only needs it for quantization, which nothing here uses);
+upgrading it to >= 0.15 also works. The error message below says the same thing if you
+hit it later.
 
 Why ``python_function`` and not the ``huggingface`` adapter? That adapter builds a
 ``transformers.pipeline()`` from a repo, which cannot express "ControlNet + a base
@@ -80,12 +92,30 @@ def _load() -> Any:
     try:
         import torch  # type: ignore
         import qrcode  # noqa: F401  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(f"missing dependency '{exc.name}': {_MISSING_DEPS}") from exc
+
+    try:
         from diffusers import (  # type: ignore
             ControlNetModel,
             StableDiffusionControlNetPipeline,
             UniPCMultistepScheduler,
         )
     except ImportError as exc:
+        # The single most common Colab failure: Colab ships an old ``torchao``
+        # (0.14.x) while current diffusers imports ``torchao.quantization.FqnToConfig``
+        # unconditionally - that name only exists from torchao 0.15.0 on. diffusers
+        # then refuses to import the ControlNet module at all. Nothing to do with
+        # this file or the model - it is the environment's pairing.
+        if "FqnToConfig" in str(exc) or "torchao" in str(exc):
+            raise RuntimeError(
+                "this VM's torchao is too old for the installed diffusers "
+                "(diffusers wants torchao.quantization.FqnToConfig, added in torchao 0.15). "
+                "Fix it in Colab and re-attach:\n"
+                "    !pip -q uninstall -y torchao        # recommended: diffusers works without it\n"
+                "    !pip -q install -U torchao          # or upgrade it to >= 0.15\n"
+                "then run the launch cell again (or Runtimes -> Reconcile in the UI)."
+            ) from exc
         raise RuntimeError(f"missing dependency '{exc.name}': {_MISSING_DEPS}") from exc
 
     use_cuda = torch.cuda.is_available()
