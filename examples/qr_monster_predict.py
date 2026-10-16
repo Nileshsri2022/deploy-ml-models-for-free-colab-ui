@@ -90,8 +90,8 @@ def _load() -> Any:
     """Build the ControlNet pipeline once, on first use."""
     global _PIPE, _PIPE_INFO
     try:
-        import torch  # type: ignore
         import qrcode  # noqa: F401  # type: ignore
+        import torch  # type: ignore
     except ImportError as exc:
         raise RuntimeError(f"missing dependency '{exc.name}': {_MISSING_DEPS}") from exc
 

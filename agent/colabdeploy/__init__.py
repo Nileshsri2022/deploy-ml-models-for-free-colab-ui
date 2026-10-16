@@ -16,8 +16,8 @@ from colabdeploy.launch import AgentSession, launch, launch_in_thread, main, sta
 __version__ = "0.1.0"
 
 __all__ = [
-    "__version__",
     "AgentSession",
+    "__version__",
     "launch",
     "launch_in_thread",
     "main",
