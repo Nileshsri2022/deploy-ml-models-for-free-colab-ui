@@ -3,11 +3,18 @@
 # New → Blueprint → point at this repo. Render picks this file up automatically.
 #
 # Free-tier notes:
-# * the free web service spins down after 15 min idle and cold-starts in ~30 s.
-#   The registry and cache snapshot live on the instance disk, so a spin-down that
-#   recycles the container loses them unless you attach a disk (paid plans) or
-#   accept re-registering your models. Endpoints and keys are cheap to recreate;
-#   the agent re-attaches by itself either way.
+# * the free web service spins down after 15 min idle and cold-starts in ~30 s,
+#   and the container disk is wiped on recycle/redeploy. The registry mirrors
+#   itself to a free Redis (see CDP_REGISTRY_BACKEND below) and restores on
+#   every cold start, so models/endpoints/keys survive all of it. Upstash's
+#   free tier (256 MB, 500K commands/month) is far more than this registry
+#   needs — it sits at a few MB and ~100K commands/month with one runtime.
+#   NOTE: Render's own free Key Value is in-memory only (wiped on restart),
+#   so it cannot serve as the mirror. Leave CDP_REDIS_URL empty to fall back
+#   to instance-disk-only persistence (re-register after a recycle).
+# * the inference cache and uploaded artifacts stay on the instance disk on
+#   purpose: the cache is a lossy resilience buffer, and artifacts live on the
+#   agent's VM anyway.
 # * websockets are supported on free web services, which is what the relay needs.
 # * set CDP_PUBLIC_URL to the rendered hostname so generated curl snippets and the
 #   Colab relaunch link use the public URL rather than an internal one.
@@ -28,6 +35,17 @@ services:
         sync: false            # e.g. https://colabdeploy.onrender.com
       - key: CDP_DATA_DIR
         value: /opt/render/project/src/.data
+      # --- durable registry on the free tier --------------------------------
+      # Create a free Redis at upstash.com (no card), copy the rediss:// URL
+      # and paste it when Render prompts for CDP_REDIS_URL. The gateway then
+      # restores the registry on every cold start; leave it empty to keep the
+      # original disk-only behaviour.
+      - key: CDP_REGISTRY_BACKEND
+        value: redis
+      - key: CDP_REDIS_URL
+        sync: false            # e.g. rediss://default:<token>@host.upstash.io:6379
+      - key: CDP_REGISTRY_SYNC_S
+        value: "30"            # coalesce mirror writes (0 = write every mutation)
       - key: CDP_CACHE_BACKEND
         value: memory
       - key: CDP_CACHE_PERSIST

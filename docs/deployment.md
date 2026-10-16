@@ -45,7 +45,9 @@ point at this repo*. Set `CDP_ADMIN_KEY` and `CDP_PUBLIC_URL` when prompted.
 The free tier spins down after 15 minutes without traffic and cold-starts in ~30 s.
 Tunnels drop when it does; agents reconnect on their own with backoff, so nothing
 is lost except the seconds it takes to come back. If the container is recycled,
-in-memory state goes with it unless you attach a disk.
+its disk goes with it — which is exactly what the
+[registry mirror](#durable-registry-on-a-free-redis-the-free-tier-fix) below
+fixes with a free Upstash URL.
 
 ## Option C — Fly.io
 
@@ -104,6 +106,60 @@ location /api/logs/stream {         # SSE needs buffering off too
     proxy_read_timeout 3600s;
 }
 ```
+
+---
+
+## Durable registry on a free Redis (the free-tier fix)
+
+Render's free web service (and Cloud Run, and any ephemeral container host)
+wipes the disk when the container is recycled. The registry can mirror itself to
+Redis and restore on every cold start, so models, endpoints,
+API keys and runtime history survive spin-downs, deploys and 3 a.m. recycles —
+at $0. The cache and uploaded artifacts stay on the instance disk on purpose:
+the cache is a lossy resilience buffer, and model bytes live on the agent's VM.
+
+Enable it with two variables:
+
+```bash
+CDP_REGISTRY_BACKEND=redis
+CDP_REDIS_URL=rediss://default:<token>@your-db.upstash.io:6379
+```
+
+The Render blueprint (`deploy/render.yaml`) already sets these up: Render
+prompts for `CDP_REDIS_URL` on first deploy. Paste the URL of a free
+[Upstash](https://upstash.com) Redis database (no card needed).
+
+**Which free Redis.** The registry wants durability — most "free Redis" is not
+that:
+
+| Provider | Free size | Catch |
+| --- | --- | --- |
+| **Upstash** | 256 MB | durable (writes to disk); 500K commands/mo, 10 GB/mo bandwidth; archives the DB after ~30 days of *zero* commands (backup is kept and restorable) |
+| Redis Cloud | 30 MB | fits the registry, but tight; 100 ops/s cap |
+| Render Key Value | 25 MB | **in-memory only — wiped on every restart. Do not use for this.** |
+| Render Postgres free | 1 GB | expires 30 days after creation |
+
+**Budget math** (why Upstash's free tier is enough):
+
+* *Size:* the registry is a few MB steady state — records are ~0.5–2 KB, the
+  audit log is capped at 2000 entries, jobs are pruned after 7 days. 256 MB is
+  ~50× headroom. (30 MB would also fit; 25 MB would not fit + cache — which is
+  why the cache stays out.)
+* *Commands:* the mirror writes one key per changed record, coalesced into at
+  most one pipeline per `CDP_REGISTRY_SYNC_S` (default 30). A runtime
+  heartbeating every 15 s therefore costs ≤1 SET per 30 s ≈ ≤86K
+  commands/month; quotas and audit add a few thousand more. One or two
+  connected runtimes sit around 100–200K of the 500K budget. Running more?
+  Raise `CDP_REGISTRY_SYNC_S` to 60–120 (mirror staleness window, not local
+  durability) or `CDP_HEARTBEAT_S` to 30.
+* *Bandwidth:* ~100–300 MB/month against a 10 GB allowance.
+
+**Failure behaviour.** Redis unreachable ⇒ the gateway logs one warning and
+keeps serving from the instance disk, retrying the connection every 30 s and
+catching up when it returns. A hard kill can lose at most the last sync window
+of *mirror* data (the local disk copy is always immediate; graceful shutdown
+flushes the mirror synchronously). While the gateway runs, a daily no-op
+keepalive write prevents the Upstash idle-archival from ever triggering.
 
 ---
 

@@ -57,6 +57,25 @@ class Settings:
     # --- persistence ------------------------------------------------------
     data_dir: Path = field(default_factory=lambda: Path(os.getenv("CDP_DATA_DIR", ".data")))
 
+    # --- registry mirror (optional; survives free-tier container recycling) ---
+    # "file"  -> JSON under data_dir/store (original behaviour);
+    # "redis" -> same files, mirrored per-record to Redis and restored on boot.
+    #           Point CDP_REDIS_URL at a free Upstash database (rediss://...);
+    #           Render's own free Key Value is in-memory only and will NOT do.
+    registry_backend: str = field(
+        default_factory=lambda: os.getenv("CDP_REGISTRY_BACKEND", "file")
+    )
+    redis_url: str = field(default_factory=lambda: os.getenv("CDP_REDIS_URL", ""))
+    # Coalesce mirror writes: mutations of the same key within this window cost
+    # one SET. 0 = write through on every mutation. The local disk copy is
+    # always written immediately either way; this only paces Redis traffic.
+    registry_sync_s: float = field(default_factory=lambda: _float("CDP_REGISTRY_SYNC_S", 30.0))
+    # Periodic no-op write so free tiers that archive idle databases (Upstash,
+    # after ~30 days) keep the mirror alive while the gateway runs.
+    registry_keepalive_s: float = field(
+        default_factory=lambda: _float("CDP_REGISTRY_KEEPALIVE_S", 86400.0)
+    )
+
     # --- cache ------------------------------------------------------------
     cache_backend: str = field(default_factory=lambda: os.getenv("CDP_CACHE_BACKEND", "memory"))
     cache_max_entries: int = field(default_factory=lambda: _int("CDP_CACHE_MAX_ENTRIES", 20000))

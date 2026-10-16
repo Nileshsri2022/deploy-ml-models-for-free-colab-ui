@@ -13,8 +13,8 @@ from typing import Any
 from gateway.core.cache import CacheBackend, build_cache
 from gateway.core.config import Settings, get_settings, reset_settings
 from gateway.core.logging import SseHub, Telemetry
-from gateway.core.repository import Registry
-from gateway.core.store import JsonStore
+from gateway.core.redis_store import RedisSnapshotStore, build_registry_store
+from gateway.core.repository import COLLECTIONS, Registry
 from gateway.services.deployments import DeploymentService
 from gateway.services.inference import InferenceService
 from gateway.services.quotas import DailyInferenceQuota
@@ -26,7 +26,12 @@ class AppState:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         settings.ensure_dirs()
-        self.store = JsonStore(settings.data_dir / "store")
+        # The registry survives container recycling by mirroring to Redis when
+        # CDP_REGISTRY_BACKEND=redis; otherwise it is the plain file store.
+        self.store = build_registry_store(settings)
+        self.registry_restored = 0
+        if isinstance(self.store, RedisSnapshotStore):
+            self.registry_restored = self.store.warm([*COLLECTIONS, "inference_usage"])
         self.registry = Registry(self.store)
         self.inference_quota = DailyInferenceQuota(self.store, settings.daily_inference_quota)
         self.cache: CacheBackend = build_cache(
@@ -71,8 +76,10 @@ class AppState:
 
     async def startup(self) -> None:
         await self.runtimes.start_async()
+        mirror = "registry restored from Redis" if self.registry_restored else ""
         self.telemetry.log(
-            f"control plane up (cache={self.cache.name}, data_dir={self.settings.data_dir})",
+            f"control plane up (cache={self.cache.name}, data_dir={self.settings.data_dir})"
+            + (f" [{mirror}]" if mirror else ""),
             data={"version": self.settings.version, "env": self.settings.env},
         )
 
@@ -80,6 +87,7 @@ class AppState:
         await self.runtimes.stop()
         await self.relay.close_all("gateway shutdown")
         self.cache.close()
+        self.store.close()  # no-op for the file store; flushes the Redis mirror
         self.telemetry.log("control plane stopped")
 
 

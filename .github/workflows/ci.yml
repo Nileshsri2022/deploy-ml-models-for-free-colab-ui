@@ -40,7 +40,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e packages/shared-schema -e apps/gateway -e agent
-          pip install pytest ruff
+          pip install pytest ruff fakeredis
 
       - name: Ruff
         run: ruff check . --output-format=github

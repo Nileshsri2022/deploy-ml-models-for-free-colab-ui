@@ -36,7 +36,8 @@ COPY apps/gateway/pyproject.toml apps/gateway/README.md apps/gateway/
 RUN pip install --no-cache-dir ./packages/shared-schema
 
 COPY apps/gateway/gateway/ apps/gateway/gateway/
-RUN pip install --no-cache-dir ./apps/gateway
+# [redis] pulls in redis-py for the registry mirror (CDP_REGISTRY_BACKEND=redis).
+RUN pip install --no-cache-dir './apps/gateway[redis]'
 
 COPY --from=ui /ui/dist /app/apps/ui/dist
 
