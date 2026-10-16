@@ -220,3 +220,20 @@ def test_factory_builds_mirror_with_a_url(data_dir: Path) -> None:
     store = build_registry_store(settings)
     assert isinstance(store, RedisSnapshotStore)
     store.close()  # never connected: _ensure_client degrades quietly
+
+
+def test_inspect_lists_upstash_keys(tmp_path: Path, server: Any) -> None:
+    store = make_store(tmp_path / "a", server, sync_interval_s=0)
+    store.put("models", "m1", {"id": "m1", "name": "clf"})
+    store.put("endpoints", "e1", {"id": "e1", "route": "/score"})
+    view = store.inspect(limit=50)
+    assert view["connected"] is True
+    assert view["backend"] == "upstash"
+    ids = {(row["collection"], row["id"]) for row in view["keys"] if row["kind"] == "record"}
+    assert ("models", "m1") in ids
+    assert ("endpoints", "e1") in ids
+    one = store.inspect_key(store._key("models", "m1"))
+    assert one is not None and one["value"]["id"] == "m1"
+    assert store.drop_key(store._key("models", "m1")) is True
+    assert store.inspect_key(store._key("models", "m1")) is None
+    store.close()

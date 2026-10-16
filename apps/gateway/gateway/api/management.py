@@ -8,7 +8,7 @@ Grouped by concern:
 * ``/api/models``     - register model versions (with artifact upload)
 * ``/api/endpoints``  - publish, tune (cache TTL / degradation), delete
 * ``/api/deploy``     - the deploy wizard's single call, plus rollback
-* ``/api/cache``      - inspect the resilience buffer, pin hot keys, invalidate
+* ``/api/cache``      - inspect the Upstash Redis registry mirror (UI Cache page)
 * ``/api/logs``       - ring buffer + SSE live tail
 * ``/api/jobs``       - queued-while-offline work
 """
@@ -39,6 +39,7 @@ from colabdeploy_shared.schemas import (
     RuntimeTokenInfo,
 )
 from gateway.api.deps import app_state, manage_dependency
+from gateway.core.redis_store import RedisSnapshotStore
 
 router = APIRouter(prefix="/api", tags=["management"])
 
@@ -536,6 +537,77 @@ async def hot_keys(
     """Keys sent to an agent as warm-up samples when it reconnects."""
     state = app_state(request)
     return {"count": limit, "hot_keys": state.cache.hot_keys(limit=limit)}
+
+
+def _upstash(request: Request) -> RedisSnapshotStore | None:
+    store = app_state(request).store
+    return store if isinstance(store, RedisSnapshotStore) else None
+
+
+@router.get("/upstash/stats")
+async def upstash_stats(request: Request, principal: Any = Manage) -> Any:
+    """What is actually in Upstash Redis — registry metadata only."""
+    store = _upstash(request)
+    if store is None:
+        settings = app_state(request).settings
+        return {
+            "connected": False,
+            "backend": "upstash",
+            "enabled": (getattr(settings, "registry_backend", "file") or "file").lower() == "redis",
+            "entries": 0,
+            "size_bytes": 0,
+            "pending": 0,
+            "collections": {},
+            "keys": [],
+            "message": "CDP_REGISTRY_BACKEND=redis and CDP_REDIS_URL are required",
+        }
+    view = store.inspect(limit=1)
+    view.pop("keys", None)
+    view["enabled"] = True
+    return view
+
+
+@router.get("/upstash/keys")
+async def upstash_keys(
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=2000),
+    collection: str | None = None,
+    principal: Any = Manage,
+) -> Any:
+    store = _upstash(request)
+    if store is None:
+        return {"connected": False, "count": 0, "keys": [], "collections": {}}
+    view = store.inspect(limit=limit, collection=collection)
+    return view
+
+
+@router.get("/upstash/key")
+async def upstash_key(key: str, request: Request, principal: Any = Manage) -> Any:
+    store = _upstash(request)
+    if store is None:
+        return _err("Upstash is not configured", "NOT_CONFIGURED", 404)
+    row = store.inspect_key(key)
+    if row is None:
+        return _err(f"redis key '{key}' not found", "NOT_FOUND", 404)
+    return row
+
+
+@router.delete("/upstash/key")
+async def delete_upstash_key(key: str, request: Request, principal: Any = Manage) -> Any:
+    store = _upstash(request)
+    if store is None:
+        return _err("Upstash is not configured", "NOT_CONFIGURED", 404)
+    return {"deleted": key, "found": store.drop_key(key)}
+
+
+@router.post("/upstash/sync")
+async def upstash_sync(request: Request, principal: Any = Manage) -> Any:
+    """Flush pending local registry writes to Redis now."""
+    store = _upstash(request)
+    if store is None:
+        return {"synced": False, "reason": "not configured"}
+    store._sync_once()
+    return {"synced": True, "stats": store.sync_stats(), "view": store.inspect(limit=1)}
 
 
 # --------------------------------------------------------------------------- #
