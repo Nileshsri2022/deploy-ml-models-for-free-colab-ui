@@ -48,7 +48,7 @@ export default function App() {
           <NavLink to="/playground">🧪 Playground</NavLink>
 
           <div className="nav-section">Operate</div>
-          <NavLink to="/cache">⚡ Cache</NavLink>
+          <NavLink to="/cache">⚡ Upstash cache</NavLink>
           <NavLink to="/runtimes">🖥 Runtimes</NavLink>
           <NavLink to="/logs">📜 Logs</NavLink>
           <NavLink to="/keys">🔑 API keys</NavLink>

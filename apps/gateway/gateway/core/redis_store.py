@@ -370,6 +370,124 @@ class RedisSnapshotStore(JsonStore):
         with self._dirty_guard:
             return {"pending": len(self._dirty), "collections": len(self._cache)}
 
+    # ------------------------------------------------------------------ #
+    # Upstash inspector (what the UI Cache page shows)
+    # ------------------------------------------------------------------ #
+    def inspect(self, limit: int = 200, collection: str | None = None) -> dict[str, Any]:
+        """List live Redis keys. This is the Upstash view — not the inference cache."""
+        client = self._ensure_client()
+        empty: dict[str, Any] = {
+            "connected": False,
+            "backend": "upstash",
+            "namespace": self.namespace,
+            "entries": 0,
+            "size_bytes": 0,
+            "pending": self.sync_stats()["pending"],
+            "keys": [],
+            "collections": {},
+        }
+        if client is None:
+            return empty
+        try:
+            pattern = (
+                f"{self.namespace}:{collection}:*"
+                if collection
+                else f"{self.namespace}:*"
+            )
+            redis_keys: list[str] = []
+            cursor: int | str = 0
+            while True:
+                cursor, batch = client.scan(cursor=cursor, match=pattern, count=500)
+                redis_keys.extend(batch)
+                if int(cursor) == 0:
+                    break
+            redis_keys.sort()
+            sliced = redis_keys[: max(1, limit)]
+            values = client.mget(sliced) if sliced else []
+            keys_out: list[dict[str, Any]] = []
+            collections: dict[str, int] = {}
+            total_bytes = 0
+            for full_key, raw in zip(sliced, values, strict=False):
+                rest = full_key[len(self.namespace) + 1 :] if full_key.startswith(self.namespace + ":") else full_key
+                if rest.endswith(_META_SUFFIX):
+                    coll = rest[: -len(_META_SUFFIX)]
+                    record_id = "__meta__"
+                    kind = "meta"
+                elif rest == "__keepalive__":
+                    coll = "_system"
+                    record_id = "__keepalive__"
+                    kind = "keepalive"
+                else:
+                    coll, _, record_id = rest.partition(":")
+                    kind = "record"
+                collections[coll] = collections.get(coll, 0) + 1
+                blob = raw if isinstance(raw, str) else ("" if raw is None else str(raw))
+                size = len(blob.encode("utf-8"))
+                total_bytes += size
+                preview = blob[:400] + ("…" if len(blob) > 400 else "")
+                parsed: Any = None
+                if blob:
+                    try:
+                        parsed = json.loads(blob)
+                    except (ValueError, TypeError):
+                        parsed = None
+                keys_out.append(
+                    {
+                        "key": full_key,
+                        "collection": coll,
+                        "id": record_id,
+                        "kind": kind,
+                        "size_bytes": size,
+                        "preview": preview,
+                        "value": parsed if parsed is not None else blob,
+                    }
+                )
+            return {
+                "connected": True,
+                "backend": "upstash",
+                "namespace": self.namespace,
+                "entries": len(redis_keys),
+                "shown": len(keys_out),
+                "size_bytes": total_bytes,
+                "pending": self.sync_stats()["pending"],
+                "keys": keys_out,
+                "collections": collections,
+            }
+        except Exception as exc:
+            self._drop_client(exc)
+            empty["error"] = str(exc)
+            return empty
+
+    def inspect_key(self, full_key: str) -> dict[str, Any] | None:
+        client = self._ensure_client()
+        if client is None:
+            return None
+        try:
+            raw = client.get(full_key)
+        except Exception as exc:
+            self._drop_client(exc)
+            return None
+        if raw is None:
+            return None
+        blob = raw if isinstance(raw, str) else str(raw)
+        parsed: Any = None
+        try:
+            parsed = json.loads(blob)
+        except (ValueError, TypeError):
+            parsed = blob
+        return {"key": full_key, "size_bytes": len(blob.encode("utf-8")), "value": parsed}
+
+    def drop_key(self, full_key: str) -> bool:
+        """Delete one Redis key. Local JSON is left as-is (mirror only)."""
+        client = self._ensure_client()
+        if client is None:
+            return False
+        try:
+            return bool(client.delete(full_key))
+        except Exception as exc:
+            self._drop_client(exc)
+            return False
+
 
 def build_registry_store(settings: Any) -> JsonStore:
     """Factory used by the app container: file store, or Redis-mirrored store.
