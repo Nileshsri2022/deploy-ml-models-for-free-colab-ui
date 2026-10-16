@@ -38,7 +38,9 @@ def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-def _failure_response(exc: InferenceFailure, extra_headers: dict[str, str] | None = None) -> JSONResponse:
+def _failure_response(
+    exc: InferenceFailure, extra_headers: dict[str, str] | None = None
+) -> JSONResponse:
     headers = {"X-ColabDeploy-Error": exc.code}
     if exc.retry_after:
         headers["Retry-After"] = str(exc.retry_after)
@@ -46,9 +48,7 @@ def _failure_response(exc: InferenceFailure, extra_headers: dict[str, str] | Non
         headers.update(extra_headers)
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "error": {"code": exc.code, "message": exc.message, "detail": exc.detail or None}
-        },
+        content={"error": {"code": exc.code, "message": exc.message, "detail": exc.detail or None}},
         headers=headers,
     )
 
@@ -110,14 +110,21 @@ async def predict(
     try:
         resolved = _resolve(state, identifier)
         _consume_daily_quota(state, principal)
-        payload = await state.inference.predict(resolved, body, request_id=x_request_id)
+        payload = await state.inference.predict(
+            resolved,
+            body,
+            request_id=x_request_id or getattr(request.state, "request_id", None),
+        )
     except InferenceFailure as exc:
         return _failure_response(exc)
     for key, value in _response_headers(payload).items():
         response.headers[key] = value
     status = 202 if payload.job_id and payload.output is None else 200
-    return JSONResponse(status_code=status, content=payload.model_dump(mode="json"),
-                        headers=_response_headers(payload))
+    return JSONResponse(
+        status_code=status,
+        content=payload.model_dump(mode="json"),
+        headers=_response_headers(payload),
+    )
 
 
 @router.post("/models/{identifier}/predict:batch")
@@ -137,7 +144,9 @@ async def predict_batch(
     try:
         resolved = _resolve(state, identifier)
         _consume_daily_quota(state, principal)
-        results = await state.inference.predict_batch(resolved, [i for i in items if isinstance(i, dict)])
+        results = await state.inference.predict_batch(
+            resolved, [i for i in items if isinstance(i, dict)]
+        )
     except InferenceFailure as exc:
         return _failure_response(exc)
     return {
@@ -216,8 +225,11 @@ async def create_job(
             InferenceFailure("INVALID_PAYLOAD", "endpoint_id or model_id is required", 422)
         )
     try:
-        resolved = state.inference.resolve_by_endpoint(identifier) \
-            if body.endpoint_id else _resolve(state, identifier)
+        resolved = (
+            state.inference.resolve_by_endpoint(identifier)
+            if body.endpoint_id
+            else _resolve(state, identifier)
+        )
     except InferenceFailure as exc:
         return _failure_response(exc)
     _consume_daily_quota(state, principal)
@@ -234,7 +246,9 @@ async def get_job(job_id: str, request: Request) -> Any:
     state = app_state(request)
     job = state.registry.jobs.get(job_id)
     if job is None:
-        return _failure_response(InferenceFailure("JOB_NOT_FOUND", f"job '{job_id}' not found", 404))
+        return _failure_response(
+            InferenceFailure("JOB_NOT_FOUND", f"job '{job_id}' not found", 404)
+        )
     payload = job.model_dump(mode="json")
     headers = {}
     if job.state in (JobState.QUEUED, JobState.RUNNING):
@@ -259,9 +273,7 @@ async def status(request: Request) -> StatusResponse:
     state = app_state(request)
     runtimes = [state.runtimes.runtime_view(r) for r in state.registry.runtimes.list()]
     online = [r for r in runtimes if r.state == RuntimeState.ONLINE]
-    degraded = [
-        r for r in runtimes if r.state in (RuntimeState.DEGRADED, RuntimeState.STALE)
-    ]
+    degraded = [r for r in runtimes if r.state in (RuntimeState.DEGRADED, RuntimeState.STALE)]
     endpoints = state.registry.endpoints.list()
     serving = sum(
         1
@@ -332,9 +344,7 @@ async def metrics(request: Request) -> str:
         f"colabdeploy_uptime_seconds {summary['uptime_s']}",
     ]
     for runtime in state.registry.runtimes.list():
-        state_value = {"online": 1, "degraded": 0.5, "stale": 0.25}.get(
-            str(runtime.state.value), 0
-        )
+        state_value = {"online": 1, "degraded": 0.5, "stale": 0.25}.get(str(runtime.state.value), 0)
         lines.append(
             f'colabdeploy_runtime_state{{runtime_id="{runtime.id}",label="{runtime.label}"}} {state_value}'
         )

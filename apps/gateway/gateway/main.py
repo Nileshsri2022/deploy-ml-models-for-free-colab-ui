@@ -32,13 +32,15 @@ from gateway import __version__
 from gateway.api import internal as internal_api, management as management_api, v1 as v1_api
 from gateway.api.deps import app_state
 from gateway.core.config import get_settings
+from gateway.core.sentry import capture_exception, initialize_sentry
 from gateway.state import AppState, build_state, set_state
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
     """Application factory - tests pass a state built against a temp dir."""
-    settings = (state.settings if state else get_settings())
+    settings = state.settings if state else get_settings()
     settings.ensure_dirs()
+    initialize_sentry(settings)
 
     from contextlib import asynccontextmanager
 
@@ -75,6 +77,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=[
+            "X-Request-Id",
             "X-ColabDeploy-Cache",
             "X-ColabDeploy-Stale",
             "X-ColabDeploy-Request-Id",
@@ -89,12 +92,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @app.middleware("http")
     async def request_context(request: Request, call_next: Any) -> Any:
         started = time.perf_counter()
-        request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
+        request_id = request.headers.get("x-request-id", "").strip()[:128] or uuid.uuid4().hex[:16]
+        request.state.request_id = request_id
         response = await call_next(request)
         response.headers["X-Request-Id"] = request_id
         response.headers["X-ColabDeploy-Version"] = __version__
         if request.url.path.startswith(("/v1/", "/api/", "/internal/")):
-            response.headers["X-ColabDeploy-Duration-Ms"] = f"{(time.perf_counter() - started) * 1000:.1f}"
+            response.headers["X-ColabDeploy-Duration-Ms"] = (
+                f"{(time.perf_counter() - started) * 1000:.1f}"
+            )
         return response
 
     app.include_router(v1_api.router)
@@ -167,7 +173,21 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:
         st = app_state(request)
-        st.telemetry.log(f"unhandled error on {request.url.path}: {exc}", level="error")
+        request_id = getattr(request.state, "request_id", "")
+        route = getattr(request.scope.get("route"), "path", "/unknown")
+        capture_exception(
+            exc,
+            tags={
+                "request_id": str(request_id),
+                "http.method": request.method,
+                "http.route": str(route),
+            },
+        )
+        st.telemetry.log(
+            f"unhandled error on {request.url.path}: {exc}",
+            level="error",
+            request_id=request_id,
+        )
         return JSONResponse(
             status_code=500,
             content={"error": {"code": "INTERNAL", "message": str(exc), "path": request.url.path}},
@@ -283,7 +303,9 @@ def _mount_spa(app: FastAPI) -> None:
             if inside and candidate.is_file():
                 return FileResponse(str(candidate))
             if not inside or Path(path).suffix:
-                return JSONResponse({"error": {"code": "NOT_FOUND", "message": f"no such file: {path}"}}, 404)
+                return JSONResponse(
+                    {"error": {"code": "NOT_FOUND", "message": f"no such file: {path}"}}, 404
+                )
         return FileResponse(str(index))
 
     @app.get("/favicon.ico", include_in_schema=False)
@@ -304,7 +326,9 @@ def _print_bootstrap(state: AppState) -> None:
     if os.getenv("CDP_QUIET_BOOT", "").lower() in {"1", "true", "yes"}:
         AuthService(state.registry).ensure_bootstrap_key(state.settings.bootstrap_admin_key)
         return
-    token, created = AuthService(state.registry).ensure_bootstrap_key(state.settings.bootstrap_admin_key)
+    token, created = AuthService(state.registry).ensure_bootstrap_key(
+        state.settings.bootstrap_admin_key
+    )
     line = "=" * 72
     print(line)
     print(f"  ColabDeploy control plane v{__version__}  ·  env={state.settings.env}")

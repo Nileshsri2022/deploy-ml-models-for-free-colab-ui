@@ -37,7 +37,7 @@ RUN pip install --no-cache-dir ./packages/shared-schema
 
 COPY apps/gateway/gateway/ apps/gateway/gateway/
 # [redis] pulls in redis-py for the registry mirror (CDP_REGISTRY_BACKEND=redis).
-RUN pip install --no-cache-dir './apps/gateway[redis]'
+RUN pip install --no-cache-dir './apps/gateway[redis,sentry]'
 
 COPY --from=ui /ui/dist /app/apps/ui/dist
 

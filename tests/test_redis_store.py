@@ -50,7 +50,9 @@ def make_store(
         root,
         redis_url="redis://fake",
         sync_interval_s=sync_interval_s,
-        client=client if client is not None else fakeredis.FakeRedis(server=server, decode_responses=True),
+        client=client
+        if client is not None
+        else fakeredis.FakeRedis(server=server, decode_responses=True),
     )
 
 
@@ -143,6 +145,95 @@ def test_unreachable_redis_degrades_to_file_store(tmp_path: Path) -> None:
     assert reopened.get("models", "m1") == {"id": "m1"}
 
 
+def test_unreachable_redis_reason_is_logged_once_and_redacted(tmp_path: Path) -> None:
+    events: list[tuple[str, str, dict[str, Any]]] = []
+
+    class SensitiveDeadClient(_DeadClient):
+        def __getattr__(self, name: str) -> Any:
+            def _raise(*args: Any, **kwargs: Any) -> None:
+                raise ConnectionError(
+                    "cannot connect to rediss://default:supersecret@cache.upstash.io:6379"
+                )
+
+            return _raise
+
+    store = RedisSnapshotStore(
+        tmp_path,
+        redis_url="rediss://default:supersecret@cache.upstash.io:6379",
+        sync_interval_s=3600.0,
+        client=SensitiveDeadClient(),
+        event_callback=lambda message, level, data: events.append((message, level, data)),
+    )
+    first = store.inspect()
+    second = store.inspect()
+
+    assert first["connected"] is False
+    assert second["connected"] is False
+    assert "supersecret" not in str(first)
+    assert "supersecret" not in str(events)
+    assert first["last_error"] and "ConnectionError" in first["last_error"]
+    assert len(events) == 1  # one event for the outage, not every retry
+    assert events[0][1] == "warning"
+    assert events[0][2]["component"] == "upstash"
+    store.close()
+
+
+def test_upstash_outage_is_reported_to_sentry_once(monkeypatch: Any, tmp_path: Path) -> None:
+    from gateway.core import redis_store as redis_store_module
+
+    captured: list[tuple[str, str, dict[str, str]]] = []
+    monkeypatch.setattr(
+        redis_store_module,
+        "capture_message",
+        lambda message, *, level, tags: captured.append((message, level, tags)),
+    )
+    store = RedisSnapshotStore(
+        tmp_path,
+        redis_url="redis://fake",
+        sync_interval_s=3600.0,
+        client=_DeadClient(),
+    )
+
+    store.inspect()
+    store.inspect()
+
+    assert len(captured) == 1
+    assert captured[0][1] == "warning"
+    assert captured[0][2] == {"component": "upstash", "operation": "inspect"}
+    assert "redis down" in captured[0][0]
+    store.close()
+
+
+def test_redis_recovery_is_logged_after_failure(tmp_path: Path) -> None:
+    events: list[tuple[str, str, dict[str, Any]]] = []
+
+    class FlakyClient:
+        failed = True
+
+        def scan(self, **kwargs: Any) -> tuple[int, list[str]]:
+            if self.failed:
+                raise ConnectionError("redis temporarily unavailable")
+            return 0, []
+
+        def mget(self, keys: list[str]) -> list[Any]:
+            return []
+
+    client = FlakyClient()
+    store = RedisSnapshotStore(
+        tmp_path,
+        redis_url="redis://fake",
+        sync_interval_s=3600.0,
+        client=client,
+        event_callback=lambda message, level, data: events.append((message, level, data)),
+    )
+    assert store.inspect()["connected"] is False
+    client.failed = False
+    assert store.inspect()["connected"] is True
+    assert [event[1] for event in events] == ["warning", "info"]
+    assert "recovered" in events[-1][0]
+    store.close()
+
+
 def test_concurrent_mutations_all_reach_redis(tmp_path: Path, server: Any) -> None:
     store = make_store(tmp_path, server, sync_interval_s=0.1)
 
@@ -203,9 +294,7 @@ def test_factory_falls_back_without_a_url(data_dir: Path) -> None:
 def test_factory_falls_back_when_redis_lib_missing(data_dir: Path, monkeypatch: Any) -> None:
     from gateway.core.config import reset_settings
 
-    settings = reset_settings(
-        data_dir=data_dir, registry_backend="redis", redis_url="redis://fake"
-    )
+    settings = reset_settings(data_dir=data_dir, registry_backend="redis", redis_url="redis://fake")
     monkeypatch.setitem(sys.modules, "redis", None)  # `import redis` now raises
     store = build_registry_store(settings)
     assert isinstance(store, JsonStore) and not isinstance(store, RedisSnapshotStore)
@@ -214,9 +303,7 @@ def test_factory_falls_back_when_redis_lib_missing(data_dir: Path, monkeypatch: 
 def test_factory_builds_mirror_with_a_url(data_dir: Path) -> None:
     from gateway.core.config import reset_settings
 
-    settings = reset_settings(
-        data_dir=data_dir, registry_backend="redis", redis_url="redis://fake"
-    )
+    settings = reset_settings(data_dir=data_dir, registry_backend="redis", redis_url="redis://fake")
     store = build_registry_store(settings)
     assert isinstance(store, RedisSnapshotStore)
     store.close()  # never connected: _ensure_client degrades quietly

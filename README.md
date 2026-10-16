@@ -116,7 +116,7 @@ the cache key includes the version so a rollback can never serve the wrong answe
 | **A UI that stays useful** | Dashboard, Connect, Models, Endpoints, Playground, Cache inspector, Runtimes, Logs (live SSE tail), API keys. Every read is shelved in `localStorage`, so when the control plane is unreachable the UI shows "last known state · 2 min ago" instead of going blank. |
 | **Cache that survives disconnects** | two-tier: fresh entries answer without touching a VM, stale entries answer *while* the gateway re-fetches (`stale-while-revalidate`), and the top-K hot keys are replayed to a reconnecting agent as warm-up samples so the requests that matter are warm first. Snapshots to disk so a gateway restart doesn't empty it. |
 | **Declared, not commanded** | a deploy writes intent to the registry. A VM reconciles against desired state on connect and on every change, so you can deploy with nothing online and it just works when a VM appears. |
-| **Observable** | request ids, latency percentiles, cache hit ratio, relay health, agent logs batched back over the tunnel, an audit trail, Prometheus at `/v1/metrics`. |
+| **Observable** | request ids, latency percentiles, cache hit ratio, relay health, agent logs batched back over the tunnel, an audit trail, Upstash failure diagnostics, Prometheus at `/v1/metrics`, and optional Sentry error reporting/issues in Logs. |
 
 Full reference: [`docs/api.md`](docs/api.md) · design rationale: [`architecture.md`](architecture.md)
 

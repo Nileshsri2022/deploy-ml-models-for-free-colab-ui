@@ -43,9 +43,11 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from gateway.core.sentry import capture_message, scrub_sensitive_text
 from gateway.core.store import JsonStore
 
 logger = logging.getLogger("gateway.registry")
@@ -65,6 +67,7 @@ class RedisSnapshotStore(JsonStore):
         sync_interval_s: float = 30.0,
         keepalive_s: float = 86400.0,
         client: Any | None = None,
+        event_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
     ) -> None:
         super().__init__(root)
         self.namespace = namespace.rstrip(":")
@@ -73,8 +76,14 @@ class RedisSnapshotStore(JsonStore):
         self._url = redis_url
         self._injected = client is not None
         self._client: Any | None = client
+        self._event_callback = event_callback
         self._last_connect_attempt = -60.0  # allow the first attempt immediately
         self._connect_warned = False
+        self._ever_connected = False
+        self._connected = False
+        self._last_error: str | None = None
+        self._last_error_at: str | None = None
+        self._last_success_at: str | None = None
 
         # (collection, key) -> monotonic sequence number, for "set" or "del".
         self._dirty: dict[tuple[str, str], str] = {}
@@ -115,26 +124,62 @@ class RedisSnapshotStore(JsonStore):
             )
             client.ping()
         except Exception as exc:  # any failure degrades to file-only
-            if not self._connect_warned:
-                logger.warning(
-                    "registry mirror: Redis unreachable (%s); continuing on the "
-                    "instance disk and retrying in the background",
-                    exc,
-                )
-                self._connect_warned = True
+            self._record_failure("connect", exc)
             return None
-        logger.info("registry mirror: connected to Redis")
+
+        self._client = client
+        self._record_success()
+        self._ever_connected = True
         return client
 
-    def _drop_client(self, exc: Exception) -> None:
+    def _drop_client(self, exc: Exception, *, operation: str = "sync") -> None:
         if not self._injected:
             self._client = None
-        if not self._connect_warned:
-            logger.warning(
-                "registry mirror: Redis write failed (%s); will reconnect and retry",
-                exc,
+        self._record_failure(operation, exc)
+
+    def _record_failure(self, operation: str, exc: Exception) -> None:
+        reason = scrub_sensitive_text(f"{type(exc).__name__}: {exc}")[:500]
+        self._connected = False
+        self._last_error = reason
+        self._last_error_at = datetime.now(timezone.utc).isoformat()
+        if self._connect_warned:
+            return  # one warning/event per outage, not one per retry
+        self._connect_warned = True
+        message = "Upstash Redis operation failed; continuing with the local registry"
+        logger.warning("registry mirror: %s (%s)", message, reason)
+        self._emit_event(
+            message,
+            "warning",
+            {"component": "upstash", "operation": operation, "reason": reason},
+        )
+        capture_message(
+            f"{message}: {reason}",
+            level="warning",
+            tags={"component": "upstash", "operation": operation},
+        )
+
+    def _record_success(self) -> None:
+        recovered = self._connect_warned
+        first_connection = not self._ever_connected
+        self._connected = True
+        self._last_success_at = datetime.now(timezone.utc).isoformat()
+        self._last_error = None
+        self._last_error_at = None
+        self._connect_warned = False
+        if recovered or first_connection:
+            message = (
+                "Upstash Redis connection recovered" if recovered else "Upstash Redis connected"
             )
-            self._connect_warned = True
+            logger.info("registry mirror: %s", message)
+            self._emit_event(message, "info", {"component": "upstash", "status": "connected"})
+
+    def _emit_event(self, message: str, level: str, data: dict[str, Any]) -> None:
+        if self._event_callback is None:
+            return
+        try:
+            self._event_callback(message, level, data)
+        except Exception:
+            logger.exception("registry mirror: unable to publish health event")
 
     # ------------------------------------------------------------------ #
     # Key helpers
@@ -154,7 +199,10 @@ class RedisSnapshotStore(JsonStore):
         return value
 
     def update(
-        self, collection: str, key: str, patch: dict[str, Any] | Callable[[dict[str, Any]], dict[str, Any]]
+        self,
+        collection: str,
+        key: str,
+        patch: dict[str, Any] | Callable[[dict[str, Any]], dict[str, Any]],
     ) -> dict[str, Any] | None:
         merged = super().update(collection, key, patch)
         if merged is not None:
@@ -233,6 +281,7 @@ class RedisSnapshotStore(JsonStore):
                 keys.extend(k for k in batch if not k.endswith(_META_SUFFIX))
                 if int(cursor) == 0:
                     break
+            self._record_success()
             if not keys:
                 return None
             prefix = len(self.namespace) + len(collection) + 2
@@ -257,7 +306,7 @@ class RedisSnapshotStore(JsonStore):
             self._materialize(collection, data)
             return data
         except Exception as exc:  # degrade to the local file
-            self._drop_client(exc)
+            self._drop_client(exc, operation="restore")
             return None
 
     def _materialize(self, collection: str, data: dict[str, Any]) -> None:
@@ -302,11 +351,9 @@ class RedisSnapshotStore(JsonStore):
             return
         self._last_keepalive = time.monotonic()
         try:
-            self._client.set(
-                f"{self.namespace}:__keepalive__", str(int(time.time()))
-            )
+            self._client.set(f"{self.namespace}:__keepalive__", str(int(time.time())))
         except Exception as exc:  # retry on the next cycle
-            self._drop_client(exc)
+            self._drop_client(exc, operation="keepalive")
 
     def _sync_once(self) -> None:
         client = self._ensure_client()
@@ -340,8 +387,9 @@ class RedisSnapshotStore(JsonStore):
                 )
             pipe.execute()
         except Exception as exc:  # retry on the next cycle
-            self._drop_client(exc)
+            self._drop_client(exc, operation="sync")
             return
+        self._record_success()
         with self._dirty_guard:
             for mark, seq in seqs.items():
                 # Only clear if the key was not mutated again while we synced.
@@ -365,10 +413,20 @@ class RedisSnapshotStore(JsonStore):
             thread.join(timeout=5)
         self._sync_once()
 
-    def sync_stats(self) -> dict[str, int]:
-        """Diagnostics: how many records are queued for the mirror."""
+    def _health_status(self) -> dict[str, Any]:
+        return {
+            "connected": self._connected,
+            "status": "connected" if self._connected else "disconnected",
+            "last_error": self._last_error,
+            "last_error_at": self._last_error_at,
+            "last_success_at": self._last_success_at,
+        }
+
+    def sync_stats(self) -> dict[str, Any]:
+        """Diagnostics for the mirror queue and last connection/sync state."""
         with self._dirty_guard:
-            return {"pending": len(self._dirty), "collections": len(self._cache)}
+            counts = {"pending": len(self._dirty), "collections": len(self._cache)}
+        return {**counts, **self._health_status()}
 
     # ------------------------------------------------------------------ #
     # Upstash inspector (what the UI Cache page shows)
@@ -377,23 +435,18 @@ class RedisSnapshotStore(JsonStore):
         """List live Redis keys. This is the Upstash view — not the inference cache."""
         client = self._ensure_client()
         empty: dict[str, Any] = {
-            "connected": False,
             "backend": "upstash",
             "namespace": self.namespace,
             "entries": 0,
             "size_bytes": 0,
-            "pending": self.sync_stats()["pending"],
             "keys": [],
             "collections": {},
+            **self.sync_stats(),
         }
         if client is None:
             return empty
         try:
-            pattern = (
-                f"{self.namespace}:{collection}:*"
-                if collection
-                else f"{self.namespace}:*"
-            )
+            pattern = f"{self.namespace}:{collection}:*" if collection else f"{self.namespace}:*"
             redis_keys: list[str] = []
             cursor: int | str = 0
             while True:
@@ -408,7 +461,11 @@ class RedisSnapshotStore(JsonStore):
             collections: dict[str, int] = {}
             total_bytes = 0
             for full_key, raw in zip(sliced, values, strict=False):
-                rest = full_key[len(self.namespace) + 1 :] if full_key.startswith(self.namespace + ":") else full_key
+                rest = (
+                    full_key[len(self.namespace) + 1 :]
+                    if full_key.startswith(self.namespace + ":")
+                    else full_key
+                )
                 if rest.endswith(_META_SUFFIX):
                     coll = rest[: -len(_META_SUFFIX)]
                     record_id = "__meta__"
@@ -442,20 +499,21 @@ class RedisSnapshotStore(JsonStore):
                         "value": parsed if parsed is not None else blob,
                     }
                 )
+            self._record_success()
             return {
-                "connected": True,
                 "backend": "upstash",
                 "namespace": self.namespace,
                 "entries": len(redis_keys),
                 "shown": len(keys_out),
                 "size_bytes": total_bytes,
-                "pending": self.sync_stats()["pending"],
                 "keys": keys_out,
                 "collections": collections,
+                **self.sync_stats(),
             }
         except Exception as exc:
-            self._drop_client(exc)
-            empty["error"] = str(exc)
+            self._drop_client(exc, operation="inspect")
+            empty.update(self._health_status())
+            empty["error"] = self._last_error
             return empty
 
     def inspect_key(self, full_key: str) -> dict[str, Any] | None:
@@ -465,8 +523,9 @@ class RedisSnapshotStore(JsonStore):
         try:
             raw = client.get(full_key)
         except Exception as exc:
-            self._drop_client(exc)
+            self._drop_client(exc, operation="inspect_key")
             return None
+        self._record_success()
         if raw is None:
             return None
         blob = raw if isinstance(raw, str) else str(raw)
@@ -483,13 +542,44 @@ class RedisSnapshotStore(JsonStore):
         if client is None:
             return False
         try:
-            return bool(client.delete(full_key))
+            deleted = bool(client.delete(full_key))
+            self._record_success()
+            return deleted
         except Exception as exc:
-            self._drop_client(exc)
+            self._drop_client(exc, operation="delete_key")
             return False
 
 
-def build_registry_store(settings: Any) -> JsonStore:
+def _report_factory_issue(
+    message: str,
+    reason: str,
+    *,
+    event_callback: Callable[[str, str, dict[str, Any]], None] | None,
+    operation: str,
+) -> None:
+    safe_reason = scrub_sensitive_text(reason)[:500]
+    logger.warning("%s (%s)", message, safe_reason)
+    if event_callback is not None:
+        try:
+            event_callback(
+                message,
+                "warning",
+                {"component": "upstash", "operation": operation, "reason": safe_reason},
+            )
+        except Exception:
+            logger.exception("registry mirror: unable to publish setup warning")
+    capture_message(
+        f"{message}: {safe_reason}",
+        level="warning",
+        tags={"component": "upstash", "operation": operation},
+    )
+
+
+def build_registry_store(
+    settings: Any,
+    *,
+    event_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
+) -> JsonStore:
     """Factory used by the app container: file store, or Redis-mirrored store.
 
     Never raises: if the ``redis`` package is missing or the URL is empty the
@@ -500,18 +590,21 @@ def build_registry_store(settings: Any) -> JsonStore:
     url = (getattr(settings, "redis_url", "") or "").strip()
     if backend != "redis" or not url:
         if backend == "redis":
-            logger.warning(
-                "CDP_REGISTRY_BACKEND=redis but CDP_REDIS_URL is empty; "
-                "the registry stays on the instance disk"
+            _report_factory_issue(
+                "CDP_REGISTRY_BACKEND=redis but CDP_REDIS_URL is empty; using local JSON",
+                "Redis URL is not configured",
+                event_callback=event_callback,
+                operation="configuration",
             )
         return JsonStore(settings.data_dir / "store")
     try:
         import redis  # noqa: F401 - optional dependency, probed up front
     except ImportError:
-        logger.warning(
-            "CDP_REGISTRY_BACKEND=redis but the redis client is not installed; "
-            "run pip install 'colabdeploy-gateway[redis]'. "
-            "Continuing with disk-only persistence."
+        _report_factory_issue(
+            "CDP_REGISTRY_BACKEND=redis but the redis client is not installed; using local JSON",
+            "Install the gateway redis extra",
+            event_callback=event_callback,
+            operation="configuration",
         )
         return JsonStore(settings.data_dir / "store")
     try:
@@ -520,11 +613,13 @@ def build_registry_store(settings: Any) -> JsonStore:
             redis_url=url,
             sync_interval_s=float(getattr(settings, "registry_sync_s", 30.0)),
             keepalive_s=float(getattr(settings, "registry_keepalive_s", 86400.0)),
+            event_callback=event_callback,
         )
     except Exception as exc:  # a mirror must never block boot
-        logger.warning(
-            "registry mirror disabled (%s); install it with "
-            "pip install 'colabdeploy-gateway[redis]'",
-            exc,
+        _report_factory_issue(
+            "registry mirror could not be initialized; using local JSON",
+            f"{type(exc).__name__}: {exc}",
+            event_callback=event_callback,
+            operation="initialize",
         )
         return JsonStore(settings.data_dir / "store")

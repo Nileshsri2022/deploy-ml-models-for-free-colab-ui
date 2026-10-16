@@ -33,6 +33,7 @@ from colabdeploy_shared.schemas import (
     EndpointInfo,
     EndpointUpdate,
     JobInfo,
+    LogLine,
     ModelCreate,
     ModelInfo,
     ModelSchema,
@@ -40,6 +41,7 @@ from colabdeploy_shared.schemas import (
 )
 from gateway.api.deps import app_state, manage_dependency
 from gateway.core.redis_store import RedisSnapshotStore
+from gateway.services.sentry_issues import SentryUpstreamError
 
 router = APIRouter(prefix="/api", tags=["management"])
 
@@ -53,6 +55,20 @@ def _base(request: Request) -> str:
 
 def _err(message: str, code: str = "BAD_REQUEST", status: int = 400) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": {"code": code, "message": message}})
+
+
+@router.get("/public-config")
+async def public_config(request: Request) -> dict[str, Any]:
+    """Public, non-secret configuration required to bootstrap the static UI."""
+    settings = app_state(request).settings
+    return {
+        "sentry_dsn": settings.sentry_ui_dsn or settings.sentry_dsn or None,
+        "sentry_environment": settings.sentry_environment or settings.env,
+        "sentry_release": settings.version,
+        "sentry_traces_sample_rate": min(
+            1.0, max(0.0, float(settings.sentry_ui_traces_sample_rate))
+        ),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -110,7 +126,9 @@ async def list_keys(request: Request, principal: Any = Manage) -> Any:
     from gateway.core.security import AuthService
 
     state = app_state(request)
-    return {"keys": [k.model_dump(mode="json") for k in AuthService(state.registry).list_api_keys()]}
+    return {
+        "keys": [k.model_dump(mode="json") for k in AuthService(state.registry).list_api_keys()]
+    }
 
 
 @router.delete("/keys/{key_id}")
@@ -212,9 +230,7 @@ async def reconcile_runtime(runtime_id: str, request: Request, principal: Any = 
     """Force-push desired state (and hot cache keys as warm-up samples) to a VM."""
     state = app_state(request)
     if not state.relay.is_connected(runtime_id):
-        return _err(
-            f"runtime '{runtime_id}' has no live tunnel", "RUNTIME_OFFLINE", 503
-        )
+        return _err(f"runtime '{runtime_id}' has no live tunnel", "RUNTIME_OFFLINE", 503)
     ok = await state.runtimes.push_desired_state(runtime_id, with_warmup=True)
     return {"pushed": ok, "runtime_id": runtime_id}
 
@@ -423,7 +439,10 @@ async def deploy(body: DeployRequest, request: Request, principal: Any = Manage)
 
 @router.post("/endpoints/{endpoint_id}/rollback")
 async def rollback(
-    endpoint_id: str, request: Request, model_version: int = Query(..., ge=1), principal: Any = Manage
+    endpoint_id: str,
+    request: Request,
+    model_version: int = Query(..., ge=1),
+    principal: Any = Manage,
 ) -> Any:
     state = app_state(request)
     try:
@@ -527,7 +546,11 @@ async def save_cache(request: Request, principal: Any = Manage) -> Any:
     save = getattr(state.cache, "save", None)
     if not callable(save):
         return {"saved": False, "backend": state.cache.name}
-    return {"saved": bool(save()), "backend": state.cache.name, "stats": state.cache.stats().model_dump(mode="json")}
+    return {
+        "saved": bool(save()),
+        "backend": state.cache.name,
+        "stats": state.cache.stats().model_dump(mode="json"),
+    }
 
 
 @router.get("/cache/hot")
@@ -547,19 +570,28 @@ def _upstash(request: Request) -> RedisSnapshotStore | None:
 @router.get("/upstash/stats")
 async def upstash_stats(request: Request, principal: Any = Manage) -> Any:
     """What is actually in Upstash Redis — registry metadata only."""
+    state = app_state(request)
     store = _upstash(request)
     if store is None:
-        settings = app_state(request).settings
+        health = state.registry_mirror_health
+        enabled = bool(health.get("enabled"))
         return {
             "connected": False,
             "backend": "upstash",
-            "enabled": (getattr(settings, "registry_backend", "file") or "file").lower() == "redis",
+            "enabled": enabled,
+            "status": health.get("status", "disabled"),
             "entries": 0,
             "size_bytes": 0,
             "pending": 0,
+            "last_error": health.get("last_error"),
+            "last_error_at": health.get("last_error_at"),
+            "last_success_at": health.get("last_success_at"),
             "collections": {},
             "keys": [],
-            "message": "CDP_REGISTRY_BACKEND=redis and CDP_REDIS_URL are required",
+            "message": (
+                health.get("last_error")
+                or "CDP_REGISTRY_BACKEND=redis and CDP_REDIS_URL are required"
+            ),
         }
     view = store.inspect(limit=1)
     view.pop("keys", None)
@@ -574,9 +606,24 @@ async def upstash_keys(
     collection: str | None = None,
     principal: Any = Manage,
 ) -> Any:
+    state = app_state(request)
     store = _upstash(request)
     if store is None:
-        return {"connected": False, "count": 0, "keys": [], "collections": {}}
+        health = state.registry_mirror_health
+        return {
+            "connected": False,
+            "backend": "upstash",
+            "enabled": bool(health.get("enabled")),
+            "status": health.get("status", "disabled"),
+            "entries": 0,
+            "size_bytes": 0,
+            "pending": 0,
+            "count": 0,
+            "keys": [],
+            "collections": {},
+            "message": health.get("last_error"),
+            **health,
+        }
     view = store.inspect(limit=limit, collection=collection)
     return view
 
@@ -605,14 +652,48 @@ async def upstash_sync(request: Request, principal: Any = Manage) -> Any:
     """Flush pending local registry writes to Redis now."""
     store = _upstash(request)
     if store is None:
-        return {"synced": False, "reason": "not configured"}
+        health = app_state(request).registry_mirror_health
+        return {"synced": False, "reason": health.get("last_error") or "not configured"}
     store._sync_once()
-    return {"synced": True, "stats": store.sync_stats(), "view": store.inspect(limit=1)}
+    stats = store.sync_stats()
+    synced = bool(stats["connected"]) and stats["pending"] == 0
+    return {
+        "synced": synced,
+        "reason": stats.get("last_error") if not synced else None,
+        "stats": stats,
+        "view": store.inspect(limit=1),
+    }
 
 
 # --------------------------------------------------------------------------- #
 # Logs, audit, jobs
 # --------------------------------------------------------------------------- #
+@router.get("/sentry/issues")
+async def sentry_issues(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    principal: Any = Manage,
+) -> Any:
+    """Read recent Sentry issue summaries through the server-side token."""
+    state = app_state(request)
+    try:
+        return await state.sentry_issues.list_issues(limit)
+    except SentryUpstreamError as exc:
+        state.publish_log(
+            LogLine(
+                level="warning",
+                source="gateway",
+                message="Could not load Sentry issues",
+                data={"component": "sentry", "reason": str(exc)},
+            )
+        )
+        return _err(
+            "Could not fetch issues from Sentry; check the gateway logs/configuration.",
+            "SENTRY_UNAVAILABLE",
+            502,
+        )
+
+
 @router.get("/logs")
 async def recent_logs(
     request: Request,
@@ -625,7 +706,8 @@ async def recent_logs(
     lines = [
         line
         for line in reversed(list(state.telemetry.logs._items))
-        if (level is None or line.level == level) and (runtime_id is None or line.runtime_id == runtime_id)
+        if (level is None or line.level == level)
+        and (runtime_id is None or line.runtime_id == runtime_id)
     ][:limit]
     return {"count": len(lines), "logs": [ln.model_dump(mode="json") for ln in lines]}
 
@@ -657,7 +739,9 @@ async def log_stream(request: Request, principal: Any = Manage) -> StreamingResp
 
 
 @router.get("/audit")
-async def audit(request: Request, limit: int = Query(default=100, ge=1, le=1000), principal: Any = Manage) -> Any:
+async def audit(
+    request: Request, limit: int = Query(default=100, ge=1, le=1000), principal: Any = Manage
+) -> Any:
     state = app_state(request)
     return {"entries": state.registry.audit.recent(limit)}
 
@@ -686,10 +770,18 @@ async def retry_job(job_id: str, request: Request, principal: Any = Manage) -> A
     if job.state == JobState.QUEUED:
         return {"queued": job_id, "message": "already queued"}
     st.registry.store.update(
-        "jobs", job_id, {"state": JobState.QUEUED.value, "error": None, "attempts": 0, "done_at": None}
+        "jobs",
+        job_id,
+        {"state": JobState.QUEUED.value, "error": None, "attempts": 0, "done_at": None},
     )
-    dispatched = await st.inference.dispatch_job(JobInfo.model_validate(st.registry.jobs.get(job_id)))
-    return {"queued": job_id, "dispatched": dispatched, "job": st.registry.jobs.get(job_id).model_dump(mode="json")}
+    dispatched = await st.inference.dispatch_job(
+        JobInfo.model_validate(st.registry.jobs.get(job_id))
+    )
+    return {
+        "queued": job_id,
+        "dispatched": dispatched,
+        "job": st.registry.jobs.get(job_id).model_dump(mode="json"),
+    }
 
 
 @router.get("/telemetry")

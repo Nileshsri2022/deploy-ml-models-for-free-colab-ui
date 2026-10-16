@@ -22,10 +22,30 @@ interface AuditEntry {
   [key: string]: unknown
 }
 
+interface SentryIssue {
+  id: string
+  short_id: string | null
+  title: string
+  culprit: string | null
+  level: string
+  status: string
+  count: number
+  first_seen: string | null
+  last_seen: string | null
+  permalink: string | null
+}
+
+interface SentryIssueList {
+  configured: boolean
+  issues: SentryIssue[]
+  fetched_at: string | null
+  cached: boolean
+}
+
 const LEVELS = ['debug', 'info', 'warning', 'error']
 
 /**
- * Logs: the live SSE tail plus the persisted ring buffer and the audit trail.
+ * Logs: operational lines, audit history, and a read-only Sentry issue view.
  *
  * Agent lines arrive over the same relay as exec traffic, so a VM's own logs are
  * visible here even though the gateway never touches its stdout.
@@ -34,7 +54,10 @@ export default function LogsPage() {
   const { logs: live, clearLogs, hasKey, toast } = useStore()
   const [history, setHistory] = useState<LogLine[]>([])
   const [audit, setAudit] = useState<AuditEntry[]>([])
-  const [tab, setTab] = useState<'live' | 'history' | 'audit'>('live')
+  const [sentry, setSentry] = useState<SentryIssueList | null>(null)
+  const [sentryLoading, setSentryLoading] = useState(false)
+  const [sentryError, setSentryError] = useState<string | null>(null)
+  const [tab, setTab] = useState<'live' | 'history' | 'audit' | 'sentry'>('live')
   const [level, setLevel] = useState<string>('all')
   const [runtimeId, setRuntimeId] = useState<string>('all')
   const [query, setQuery] = useState('')
@@ -69,6 +92,19 @@ export default function LogsPage() {
     }
   }, [])
 
+  const loadSentry = useCallback(async () => {
+    setSentryLoading(true)
+    try {
+      const result = await api.get<SentryIssueList>('/api/sentry/issues', { limit: 50 })
+      setSentry(result)
+      setSentryError(null)
+    } catch (err) {
+      setSentryError((err as Error).message)
+    } finally {
+      setSentryLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     void loadHistory()
   }, [loadHistory])
@@ -76,6 +112,13 @@ export default function LogsPage() {
   useEffect(() => {
     if (tab === 'audit') void loadAudit()
   }, [tab, loadAudit])
+
+  useEffect(() => {
+    if (tab !== 'sentry' || !hasKey) return
+    void loadSentry()
+    const timer = window.setInterval(() => void loadSentry(), 60_000)
+    return () => window.clearInterval(timer)
+  }, [tab, hasKey, loadSentry])
 
   // Auto-scroll the live tail unless the user scrolled away.
   useEffect(() => {
@@ -94,12 +137,12 @@ export default function LogsPage() {
     lines.filter((line) => {
       if (level !== 'all' && line.level !== level) return false
       if (runtimeId !== 'all' && line.runtime_id !== runtimeId) return false
-      if (query && !`${line.message} ${line.source} ${line.runtime_id ?? ''}`.toLowerCase().includes(query.toLowerCase()))
-        return false
+      const searchable = `${line.message} ${line.source} ${line.runtime_id ?? ''} ${JSON.stringify(line.data ?? {})}`
+      if (query && !searchable.toLowerCase().includes(query.toLowerCase())) return false
       return true
     })
 
-  const shown = tab === 'live' ? filter(live).slice(-limit) : filter(history)
+  const shown = tab === 'live' ? filter(live).slice(-limit) : tab === 'history' ? filter(history) : []
 
   const download = () => {
     const text = shown.map((line) => `${line.ts}\t${line.level}\t${line.source}\t${line.message}`).join('\n')
@@ -119,30 +162,34 @@ export default function LogsPage() {
         <div>
           <h1 className="page-title">Logs</h1>
           <p className="page-sub">
-            Gateway, relay and agent lines in one stream. The live tail uses Server-Sent Events; the
-            history tab reads the persisted ring buffer, which survives a restart.
+            Gateway, relay, and agent lines, management audit events, plus Sentry issues when connected.
+            Live/history lines use a bounded gateway buffer; the audit trail is stored separately.
           </p>
         </div>
         <div className="row">
-          <button type="button" className={follow ? 'primary' : ''} onClick={() => setFollow((v) => !v)}>
-            {follow ? '⏸ Following' : '▶ Follow'}
-          </button>
-          <button type="button" onClick={download}>
-            ⬇ Export
-          </button>
+          {tab === 'live' ? (
+            <button type="button" className={follow ? 'primary' : ''} onClick={() => setFollow((v) => !v)}>
+              {follow ? '⏸ Following' : '▶ Follow'}
+            </button>
+          ) : null}
+          {tab === 'live' || tab === 'history' ? (
+            <button type="button" onClick={download}>
+              ⬇ Export
+            </button>
+          ) : null}
           {tab === 'live' ? (
             <button type="button" className="ghost" onClick={clearLogs}>
               Clear view
             </button>
-          ) : (
+          ) : tab === 'history' ? (
             <button type="button" className="ghost" onClick={() => void loadHistory()}>
               ↻ Reload
             </button>
-          )}
+          ) : null}
         </div>
       </div>
 
-      {!hasKey && (
+      {!hasKey && tab === 'live' && (
         <Banner>
           The live tail needs an API key (browser <code className="mono">EventSource</code> cannot send
           headers, so the key is passed as a query parameter). Set one in <strong>API keys</strong>.
@@ -160,11 +207,55 @@ export default function LogsPage() {
         <button type="button" className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')}>
           Audit ({audit.length})
         </button>
+        <button type="button" className={tab === 'sentry' ? 'active' : ''} onClick={() => setTab('sentry')}>
+          Sentry {sentry?.configured ? `(${sentry.issues.length})` : ''}
+        </button>
       </div>
 
-      {tab !== 'audit' ? (
+      {tab === 'sentry' ? (
+        <SentryIssuesPanel
+          data={sentry}
+          loading={sentryLoading}
+          error={sentryError}
+          hasKey={hasKey}
+          onRefresh={() => void loadSentry()}
+        />
+      ) : tab === 'audit' ? (
+        <Card title="Audit trail" sub="Who changed what: deploys, key mints, rollbacks, revocations.">
+          {audit.length === 0 ? (
+            <Empty title="No audit entries" body="Actions taken through the API are recorded here." />
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Actor</th>
+                  <th>Action</th>
+                  <th>Target</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {audit.map((entry, index) => (
+                  <tr key={index}>
+                    <td className="small nowrap">{formatTime((entry.ts as string) ?? null)}</td>
+                    <td className="small mono">{String(entry.actor ?? '—')}</td>
+                    <td>
+                      <Badge tone="blue">{String(entry.action ?? '—')}</Badge>
+                    </td>
+                    <td className="small mono">{String(entry.target ?? '—')}</td>
+                    <td className="small faint truncate" style={{ maxWidth: 320 }}>
+                      {entry.detail ? JSON.stringify(entry.detail).slice(0, 120) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      ) : (
         <Card
-          title={tab === 'live' ? 'Live tail' : 'Persisted history'}
+          title={tab === 'live' ? 'Live tail' : 'Recent history'}
           sub={
             tab === 'live'
               ? 'Newest at the bottom, capped at 500 lines in the browser.'
@@ -235,42 +326,9 @@ export default function LogsPage() {
             </div>
           )}
         </Card>
-      ) : (
-        <Card title="Audit trail" sub="Who changed what: deploys, key mints, rollbacks, revocations.">
-          {audit.length === 0 ? (
-            <Empty title="No audit entries" body="Actions taken through the API are recorded here." />
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>When</th>
-                  <th>Actor</th>
-                  <th>Action</th>
-                  <th>Target</th>
-                  <th>Detail</th>
-                </tr>
-              </thead>
-              <tbody>
-                {audit.map((entry, index) => (
-                  <tr key={index}>
-                    <td className="small nowrap">{formatTime((entry.ts as string) ?? null)}</td>
-                    <td className="small mono">{String(entry.actor ?? '—')}</td>
-                    <td>
-                      <Badge tone="blue">{String(entry.action ?? '—')}</Badge>
-                    </td>
-                    <td className="small mono">{String(entry.target ?? '—')}</td>
-                    <td className="small faint truncate" style={{ maxWidth: 320 }}>
-                      {entry.detail ? JSON.stringify(entry.detail).slice(0, 120) : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Card>
       )}
 
-      {tab !== 'audit' && shown.length > 0 ? (
+      {(tab === 'live' || tab === 'history') && shown.length > 0 ? (
         <Card title="Selection detail" sub="The last line, expanded — useful when a message is truncated.">
           <KeyValue
             items={[
@@ -289,5 +347,99 @@ export default function LogsPage() {
         </Card>
       ) : null}
     </>
+  )
+}
+
+function SentryIssuesPanel({
+  data,
+  loading,
+  error,
+  hasKey,
+  onRefresh,
+}: {
+  data: SentryIssueList | null
+  loading: boolean
+  error: string | null
+  hasKey: boolean
+  onRefresh: () => void
+}) {
+  const toneFor = (level: string): 'red' | 'amber' | 'blue' | 'gray' => {
+    if (level === 'fatal' || level === 'error') return 'red'
+    if (level === 'warning') return 'amber'
+    if (level === 'info') return 'blue'
+    return 'gray'
+  }
+
+  return (
+    <Card
+      title="Sentry issues"
+      sub="Recent grouped frontend and gateway errors. Open an issue in Sentry for its full stack trace and event history."
+      actions={
+        <button type="button" disabled={!hasKey || loading} onClick={onRefresh}>
+          {loading ? <Spinner label="refreshing…" /> : '↻ Refresh'}
+        </button>
+      }
+    >
+      {error ? <Banner tone="red">{error}</Banner> : null}
+      {!hasKey ? (
+        <Empty title="Management key required" body="Add a manage-scoped API key to load Sentry issues." />
+      ) : loading && !data ? (
+        <Spinner label="loading Sentry issues…" />
+      ) : data && !data.configured ? (
+        <Empty
+          title="Sentry issue list is not connected"
+          body="Configure CDP_SENTRY_READ_TOKEN, CDP_SENTRY_ORG_SLUG, and CDP_SENTRY_PROJECT_SLUG on the gateway (and an HTTPS CDP_SENTRY_API_BASE_URL for regional/self-hosted Sentry). The SDK DSN alone only sends events; it cannot read them back."
+        />
+      ) : error && !data ? (
+        <Empty title="Unable to load Sentry issues" body="Check the Sentry project/token settings, then refresh." />
+      ) : data?.issues.length ? (
+        <>
+          <table>
+            <thead>
+              <tr>
+                <th>Level</th>
+                <th>Issue</th>
+                <th>Status</th>
+                <th>Events</th>
+                <th>Last seen</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {data.issues.map((issue) => (
+                <tr key={issue.id}>
+                  <td><Badge tone={toneFor(issue.level)}>{issue.level}</Badge></td>
+                  <td>
+                    <div>{issue.title}</div>
+                    {issue.short_id ? <div className="small faint mono">{issue.short_id}</div> : null}
+                    {issue.culprit ? <div className="small faint truncate">{issue.culprit}</div> : null}
+                  </td>
+                  <td><Badge tone={issue.status === 'resolved' ? 'green' : 'gray'}>{issue.status}</Badge></td>
+                  <td className="num">{issue.count}</td>
+                  <td className="small nowrap">{formatTime(issue.last_seen)}</td>
+                  <td>
+                    {issue.permalink ? (
+                      <a className="btn small" href={issue.permalink} target="_blank" rel="noreferrer">
+                        Open in Sentry ↗
+                      </a>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {data.fetched_at ? (
+            <p className="hint" style={{ marginTop: 10 }}>
+              Updated {formatTime(data.fetched_at)}{data.cached ? ' · cached briefly by the gateway' : ''}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <Empty
+          title={loading ? 'Refreshing Sentry issues' : 'No recent Sentry issues'}
+          body="When configured, unresolved issues from the selected Sentry project appear here."
+        />
+      )}
+    </Card>
   )
 }

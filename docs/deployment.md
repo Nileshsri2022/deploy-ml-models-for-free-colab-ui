@@ -154,12 +154,16 @@ that:
   durability) or `CDP_HEARTBEAT_S` to 30.
 * *Bandwidth:* ~100–300 MB/month against a 10 GB allowance.
 
-**Failure behaviour.** Redis unreachable ⇒ the gateway logs one warning and
-keeps serving from the instance disk, retrying the connection every 30 s and
-catching up when it returns. A hard kill can lose at most the last sync window
-of *mirror* data (the local disk copy is always immediate; graceful shutdown
-flushes the mirror synchronously). While the gateway runs, a daily no-op
-keepalive write prevents the Upstash idle-archival from ever triggering.
+**Failure behaviour.** Redis unreachable ⇒ the gateway continues serving from
+the instance disk, retries the connection every 30 s, and catches up when it
+returns. One sanitized warning per outage appears in the app's Logs page and
+host process logs; a recovery line is added when Redis reconnects. If Sentry is
+configured, the outage is also reported once per failure episode. The Cache
+page shows the latest sanitized failure reason and timestamp. A hard kill can
+lose at most the last sync window of *mirror* data (the local disk copy is
+always immediate; graceful shutdown flushes the mirror synchronously). While
+the gateway runs, a daily no-op keepalive write prevents the Upstash
+idle-archival from ever triggering.
 
 ---
 
@@ -189,6 +193,37 @@ provide becomes the bootstrap key instead of a generated one.
 | `CDP_SESSION_MAX_HOURS` | `12` | drives the countdown shown in the UI |
 | `CDP_MAX_BODY_BYTES` / `CDP_MAX_BATCH` | per model | a 10 MB body limit and 64-row batch cap are the defaults |
 | `CDP_DAILY_INFERENCE_QUOTA` | `1000` | maximum authenticated inference HTTP requests per API key per UTC day; `0` disables the quota |
+
+### Optional Sentry error monitoring
+
+Sentry is disabled when no DSN is configured. When enabled, the UI and gateway
+report unexpected exceptions to Sentry; the Logs page's **Sentry** subtab can
+also list recent grouped issues. The issue list needs a separate read-only API
+token—the DSN only sends events and cannot read them back.
+
+```bash
+CDP_SENTRY_DSN=https://<public-key>@<sentry-host>/<project-id>
+CDP_SENTRY_READ_TOKEN=<read-only-project-token>
+CDP_SENTRY_ORG_SLUG=<organization-slug>
+CDP_SENTRY_PROJECT_SLUG=<project-slug>
+CDP_SENTRY_ENVIRONMENT=production
+# Optional performance traces; 0 means errors only (the default).
+CDP_SENTRY_TRACES_SAMPLE_RATE=0
+CDP_SENTRY_UI_TRACES_SAMPLE_RATE=0
+```
+
+`CDP_SENTRY_UI_DSN` can override the frontend DSN; otherwise the UI uses
+`CDP_SENTRY_DSN`. `CDP_SENTRY_API_BASE_URL` defaults to `https://sentry.io` and
+can be set for a regional or self-hosted Sentry instance. Keep
+`CDP_SENTRY_READ_TOKEN` server-side and grant only the minimum read permissions
+needed for the project. Reported events omit credentials, request bodies,
+query strings, stack-frame locals, and free-text exception messages; browser
+console/DOM text capture and Session Replay are disabled.
+
+For a local install with Sentry enabled, install the optional Python extra:
+`pip install -e 'apps/gateway[sentry]'`. The production Docker image includes
+that extra already. With no DSN, the SDK does not send events. Redis failures
+are recorded in the app Logs/Cache views even if Sentry is not configured.
 
 **Run one worker.** The relay holds each tunnel's websocket in-process; `--workers 4`
 would give you four gateways that cannot see each other's runtimes, and requests

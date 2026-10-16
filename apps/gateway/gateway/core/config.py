@@ -48,9 +48,7 @@ class Settings:
     )
     cors_origins: list[str] = field(
         default_factory=lambda: [
-            o.strip()
-            for o in os.getenv("CDP_CORS_ORIGINS", "*").split(",")
-            if o.strip()
+            o.strip() for o in os.getenv("CDP_CORS_ORIGINS", "*").split(",") if o.strip()
         ]
     )
 
@@ -62,9 +60,7 @@ class Settings:
     # "redis" -> same files, mirrored per-record to Redis and restored on boot.
     #           Point CDP_REDIS_URL at a free Upstash database (rediss://...);
     #           Render's own free Key Value is in-memory only and will NOT do.
-    registry_backend: str = field(
-        default_factory=lambda: os.getenv("CDP_REGISTRY_BACKEND", "file")
-    )
+    registry_backend: str = field(default_factory=lambda: os.getenv("CDP_REGISTRY_BACKEND", "file"))
     redis_url: str = field(default_factory=lambda: os.getenv("CDP_REDIS_URL", ""))
     # Coalesce mirror writes: mutations of the same key within this window cost
     # one SET. 0 = write through on every mutation. The local disk copy is
@@ -100,7 +96,9 @@ class Settings:
 
     # --- inference --------------------------------------------------------
     default_timeout_ms: int = field(default_factory=lambda: _int("CDP_TIMEOUT_MS", 30000))
-    max_body_bytes: int = field(default_factory=lambda: _int("CDP_MAX_BODY_BYTES", 10 * 1024 * 1024))
+    max_body_bytes: int = field(
+        default_factory=lambda: _int("CDP_MAX_BODY_BYTES", 10 * 1024 * 1024)
+    )
     max_batch_size: int = field(default_factory=lambda: _int("CDP_MAX_BATCH", 64))
     retry_after_s: int = field(default_factory=lambda: _int("CDP_RETRY_AFTER_S", 30))
     daily_inference_quota: int = field(
@@ -111,9 +109,34 @@ class Settings:
     job_ttl_s: float = field(default_factory=lambda: _float("CDP_JOB_TTL_S", 3600.0))
     job_max_attempts: int = field(default_factory=lambda: _int("CDP_JOB_MAX_ATTEMPTS", 3))
 
-    # --- logs / metrics ---------------------------------------------------
+    # --- logs / metrics / Sentry -----------------------------------------
     log_buffer_lines: int = field(default_factory=lambda: _int("CDP_LOG_BUFFER", 5000))
     metrics_buffer_points: int = field(default_factory=lambda: _int("CDP_METRICS_BUFFER", 20000))
+    sentry_dsn: str = field(default_factory=lambda: os.getenv("CDP_SENTRY_DSN", "").strip())
+    sentry_ui_dsn: str = field(default_factory=lambda: os.getenv("CDP_SENTRY_UI_DSN", "").strip())
+    sentry_environment: str = field(
+        default_factory=lambda: os.getenv("CDP_SENTRY_ENVIRONMENT", "").strip()
+    )
+    sentry_traces_sample_rate: float = field(
+        default_factory=lambda: _float("CDP_SENTRY_TRACES_SAMPLE_RATE", 0.0)
+    )
+    sentry_ui_traces_sample_rate: float = field(
+        default_factory=lambda: _float("CDP_SENTRY_UI_TRACES_SAMPLE_RATE", 0.0)
+    )
+    sentry_read_token: str = field(
+        default_factory=lambda: os.getenv("CDP_SENTRY_READ_TOKEN", "").strip()
+    )
+    sentry_org_slug: str = field(
+        default_factory=lambda: os.getenv("CDP_SENTRY_ORG_SLUG", "").strip()
+    )
+    sentry_project_slug: str = field(
+        default_factory=lambda: os.getenv("CDP_SENTRY_PROJECT_SLUG", "").strip()
+    )
+    sentry_api_base_url: str = field(
+        default_factory=lambda: (
+            os.getenv("CDP_SENTRY_API_BASE_URL", "https://sentry.io").strip().rstrip("/")
+        )
+    )
 
     # --- security ---------------------------------------------------------
     bootstrap_admin_key: str = field(default_factory=lambda: os.getenv("CDP_ADMIN_KEY", ""))

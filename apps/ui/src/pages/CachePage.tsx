@@ -38,6 +38,10 @@ interface UpstashView {
   keys: UpstashKey[]
   message?: string
   error?: string
+  status?: 'connected' | 'connecting' | 'disconnected' | 'misconfigured' | 'disabled'
+  last_error?: string | null
+  last_error_at?: string | null
+  last_success_at?: string | null
 }
 
 /**
@@ -148,6 +152,12 @@ export default function CachePage() {
       </div>
 
       {error && <Banner tone="red">{error}</Banner>}
+      {view?.last_error && (
+        <Banner tone="red">
+          Upstash registry mirror is unavailable: {view.last_error}
+          {view.last_error_at ? ` · last failure ${new Date(view.last_error_at).toLocaleString()}` : ''}
+        </Banner>
+      )}
       {stale && !error && (
         <Banner>Showing the last-known-good Upstash view — the control plane did not answer.</Banner>
       )}
@@ -157,13 +167,13 @@ export default function CachePage() {
             'Upstash is not connected. Set CDP_REGISTRY_BACKEND=redis and CDP_REDIS_URL to a rediss:// Upstash URL.'}
         </Banner>
       )}
-      {view?.error && <Banner tone="red">{view.error}</Banner>}
+      {view?.error && !view.last_error && <Banner tone="red">{view.error}</Banner>}
 
       <div className="grid cols-4">
         <Card>
           <Stat
             label="Status"
-            value={connected ? 'connected' : 'offline'}
+            value={view?.status ?? (connected ? 'connected' : 'offline')}
             tone={connected ? 'green' : undefined}
             hint={view?.namespace ?? 'no namespace'}
           />
@@ -222,7 +232,7 @@ export default function CachePage() {
               body={
                 connected
                   ? 'Deploy a model or publish an endpoint — each registry write is mirrored here after the next sync window.'
-                  : 'The gateway is running on local JSON only. Add an Upstash Redis URL to persist the registry across host recycles.'
+                  : view?.last_error ?? view?.message ?? 'The gateway is running on local JSON only. Add an Upstash Redis URL to persist the registry across host recycles.'
               }
             />
           ) : (

@@ -48,11 +48,14 @@ def stub_runtime(state: Any):
     socket = StubSocket()
     conn = RelayConnection(runtime_id=runtime_id, ws=socket, agent_version="0.1.0-test")  # type: ignore[arg-type]
     state.relay._conns[runtime_id] = conn
-    state.registry.store.update(
-        "runtimes", runtime_id, {"state": "online", "loaded_models": []}
-    )
-    return {"runtime_id": runtime_id, "token": record["token"], "socket": socket, "conn": conn,
-            "state": state}
+    state.registry.store.update("runtimes", runtime_id, {"state": "online", "loaded_models": []})
+    return {
+        "runtime_id": runtime_id,
+        "token": record["token"],
+        "socket": socket,
+        "conn": conn,
+        "state": state,
+    }
 
 
 def serve_with(state: Any, output: Any, status: int = 200) -> list[dict[str, Any]]:
@@ -80,8 +83,14 @@ def serve_with(state: Any, output: Any, status: int = 200) -> list[dict[str, Any
     return calls
 
 
-def deploy_echo(api: Any, *, route: str = "sentiment", degradation: str = "serve_cached",
-                cache_ttl_s: int = 300, swr_s: int = 3600) -> dict[str, Any]:
+def deploy_echo(
+    api: Any,
+    *,
+    route: str = "sentiment",
+    degradation: str = "serve_cached",
+    cache_ttl_s: int = 300,
+    swr_s: int = 3600,
+) -> dict[str, Any]:
     """Register an echo model and publish it - the baseline used by most tests."""
     model = api.post(
         "/api/models",
@@ -189,7 +198,9 @@ def test_framework_hint_overrides_extension(api: Any) -> None:
 
 def test_uploading_a_second_version_bumps_the_counter(api: Any) -> None:
     first = api.post("/api/models", json={"name": "v", "artifact": {"uri": "file:///a.pkl"}}).json()
-    second = api.post("/api/models", json={"name": "v", "artifact": {"uri": "file:///b.pkl"}}).json()
+    second = api.post(
+        "/api/models", json={"name": "v", "artifact": {"uri": "file:///b.pkl"}}
+    ).json()
     assert (first["version"], second["version"]) == (1, 2)
     assert second["all_versions"] == [2, 1]
 
@@ -197,8 +208,11 @@ def test_uploading_a_second_version_bumps_the_counter(api: Any) -> None:
 def test_python_function_adapter_requires_an_entrypoint(api: Any) -> None:
     response = api.post(
         "/api/models",
-        json={"name": "custom", "adapter": "python_function",
-              "artifact": {"uri": "file:///nothing.py"}},
+        json={
+            "name": "custom",
+            "adapter": "python_function",
+            "artifact": {"uri": "file:///nothing.py"},
+        },
     )
     assert response.status_code == 400
     assert "entrypoint" in response.json()["error"]["message"]
@@ -253,8 +267,9 @@ def test_rollback_repoints_the_endpoint(api: Any, stub_runtime: Any) -> None:
     first = deploy_echo(api, route="roll")
     model_id = first["model"]["id"]
     assert first["endpoint"]["model_version"] == 1
-    v2 = api.post("/api/models", json={
-        "name": "roll", "adapter": "echo", "artifact": {"uri": "inline:{}"}}).json()
+    v2 = api.post(
+        "/api/models", json={"name": "roll", "adapter": "echo", "artifact": {"uri": "inline:{}"}}
+    ).json()
     assert v2["version"] == 2
     api.post("/api/deploy", json={"model_id": v2["id"], "endpoint_id": first["endpoint"]["id"]})
     assert api.get("/api/endpoints").json()["endpoints"][0]["model_version"] == 2
@@ -270,8 +285,10 @@ def test_rollback_repoints_the_endpoint(api: Any, stub_runtime: Any) -> None:
 
 
 def test_endpoint_route_is_slugified_and_unique(api: Any) -> None:
-    first = api.post("/api/models", json={"name": "My Model!", "adapter": "echo",
-                                          "artifact": {"uri": "inline:{}"}}).json()
+    first = api.post(
+        "/api/models",
+        json={"name": "My Model!", "adapter": "echo", "artifact": {"uri": "inline:{}"}},
+    ).json()
     endpoint = api.post("/api/endpoints", json={"model_id": first["id"]}).json()
     assert endpoint["route"] == "my-model"
 
@@ -282,9 +299,7 @@ def test_daily_inference_quota_counts_cache_hits(api: Any, stub_runtime: Any, st
     state.inference_quota.limit = 2
     deploy_echo(api, route="daily-quota")
     serve_with(state, {"label": "ok"})
-    _, token = AuthService(state.registry).create_api_key(
-        "quota-test", scopes=("inference",)
-    )
+    _, token = AuthService(state.registry).create_api_key("quota-test", scopes=("inference",))
     headers = {"Authorization": f"Bearer {token}"}
     url = "/v1/models/daily-quota/predict"
     body = {"inputs": {"text": "same"}}
@@ -327,7 +342,9 @@ def test_delete_endpoint_unloads_and_invalidates(api: Any, stub_runtime: Any) ->
 # --------------------------------------------------------------------------- #
 def test_artifact_upload_round_trip(api: Any, stub_runtime: Any, state: Any) -> None:
     files = {"file": ("model.echo.json", b'{"latency_ms": 0}', "application/json")}
-    response = api.post("/api/models/upload", data={"name": "uploaded", "adapter": "echo"}, files=files)
+    response = api.post(
+        "/api/models/upload", data={"name": "uploaded", "adapter": "echo"}, files=files
+    )
     assert response.status_code == 201, response.text
     artifact = response.json()["artifact"]
     assert artifact["uri"].startswith("store://art_")
@@ -347,20 +364,34 @@ def test_artifact_upload_round_trip(api: Any, stub_runtime: Any, state: Any) -> 
 
 def test_artifact_download_requires_a_runtime_token(api: Any, stub_runtime: Any) -> None:
     files = {"file": ("m.bin", b"data", "application/octet-stream")}
-    uploaded = api.post("/api/models/upload", data={"name": "secret", "adapter": "echo"}, files=files).json()
+    uploaded = api.post(
+        "/api/models/upload", data={"name": "secret", "adapter": "echo"}, files=files
+    ).json()
     artifact_id = uploaded["artifact"]["uri"].split("://", 1)[1]
     assert api.client.get(f"/internal/artifacts/{artifact_id}").status_code == 401
-    assert api.client.get(
-        f"/internal/artifacts/{artifact_id}", headers={"X-Runtime-Token": "CDP_RT_bogus"}
-    ).status_code == 401
-    assert api.client.get("/internal/artifacts/art_doesnotexist",
-                          headers={"X-Runtime-Token": stub_runtime["token"]}).status_code == 404
+    assert (
+        api.client.get(
+            f"/internal/artifacts/{artifact_id}", headers={"X-Runtime-Token": "CDP_RT_bogus"}
+        ).status_code
+        == 401
+    )
+    assert (
+        api.client.get(
+            "/internal/artifacts/art_doesnotexist",
+            headers={"X-Runtime-Token": stub_runtime["token"]},
+        ).status_code
+        == 404
+    )
 
 
 def test_uploaded_artifact_is_content_addressed(api: Any) -> None:
     files = {"file": ("same.bin", b"identical", "application/octet-stream")}
-    first = api.post("/api/models/upload", data={"name": "a1", "adapter": "echo"}, files=files).json()
-    second = api.post("/api/models/upload", data={"name": "a2", "adapter": "echo"}, files=files).json()
+    first = api.post(
+        "/api/models/upload", data={"name": "a1", "adapter": "echo"}, files=files
+    ).json()
+    second = api.post(
+        "/api/models/upload", data={"name": "a2", "adapter": "echo"}, files=files
+    ).json()
     assert first["artifact"]["uri"] == second["artifact"]["uri"], "same bytes -> one blob"
 
 
@@ -390,11 +421,26 @@ def test_predict_miss_then_hit(api: Any, stub_runtime: Any, state: Any) -> None:
     assert reordered.json()["cache"] == "HIT"
 
 
+def test_predict_request_id_matches_gateway_header(api: Any, stub_runtime: Any, state: Any) -> None:
+    deploy_echo(api, route="request-id")
+    serve_with(state, {"label": "ok"})
+
+    response = api.post("/v1/models/request-id/predict", json={"inputs": {"text": "hello"}})
+    request_id = response.json()["request_id"]
+
+    assert response.status_code == 200, response.text
+    assert request_id
+    assert response.headers["X-Request-Id"] == request_id
+    assert response.headers["X-ColabDeploy-Request-Id"] == request_id
+
+
 def test_predict_bypass_cache(api: Any, stub_runtime: Any, state: Any) -> None:
     deploy_echo(api, route="bypass")
     calls = serve_with(state, {"n": 1})
     api.post("/v1/models/bypass/predict", json={"inputs": {"text": "x"}})
-    again = api.post("/v1/models/bypass/predict", json={"inputs": {"text": "x"}, "bypass_cache": True})
+    again = api.post(
+        "/v1/models/bypass/predict", json={"inputs": {"text": "x"}, "bypass_cache": True}
+    )
     assert again.json()["cache"] == "MISS"
     assert len(calls) == 2
 
@@ -409,13 +455,25 @@ def test_cache_ttl_zero_disables_caching(api: Any, stub_runtime: Any, state: Any
 
 
 def test_payload_alias_and_validation(api: Any, stub_runtime: Any, state: Any) -> None:
-    api.post("/api/models", json={
-        "name": "strict", "adapter": "echo", "artifact": {"uri": "inline:{}"},
-        "schema_in": {"fields": {"text": {"type": "string"}, "n": {"type": "integer"}},
-                      "required": ["text"]},
-    })
-    api.post("/api/deploy", json={"model_id": api.get("/api/models").json()["latest"][0]["id"],
-                                  "endpoint": {"route": "strict"}})
+    api.post(
+        "/api/models",
+        json={
+            "name": "strict",
+            "adapter": "echo",
+            "artifact": {"uri": "inline:{}"},
+            "schema_in": {
+                "fields": {"text": {"type": "string"}, "n": {"type": "integer"}},
+                "required": ["text"],
+            },
+        },
+    )
+    api.post(
+        "/api/deploy",
+        json={
+            "model_id": api.get("/api/models").json()["latest"][0]["id"],
+            "endpoint": {"route": "strict"},
+        },
+    )
     serve_with(state, {"ok": True})
 
     # 'payload' is accepted as an alias for 'inputs'.
@@ -441,7 +499,9 @@ def test_unknown_endpoint_returns_a_helpful_404(api: Any) -> None:
 def test_predict_by_model_id_also_routes(api: Any, stub_runtime: Any, state: Any) -> None:
     result = deploy_echo(api, route="byid")
     serve_with(state, {"ok": 1})
-    response = api.post(f"/v1/models/{result['model']['id']}/predict", json={"inputs": {"text": "x"}})
+    response = api.post(
+        f"/v1/models/{result['model']['id']}/predict", json={"inputs": {"text": "x"}}
+    )
     assert response.status_code == 200, response.text
     assert response.json()["endpoint_id"] == result["endpoint"]["id"]
 
@@ -580,11 +640,13 @@ def test_queued_job_drains_when_a_runtime_returns(api: Any, stub_runtime: Any, s
     # Runtime comes back with the model loaded.
     calls = serve_with(state, {"label": "drained"})
     state.relay._conns[stub_runtime["runtime_id"]] = RelayConnection(
-        runtime_id=stub_runtime["runtime_id"], ws=StubSocket()  # type: ignore[arg-type]
+        runtime_id=stub_runtime["runtime_id"],
+        ws=StubSocket(),  # type: ignore[arg-type]
     )
     state.registry.deployments.patch(
         api.get("/api/deployments").json()["deployments"][0]["id"],
-        state=DeploymentState.READY.value, runtime_id=stub_runtime["runtime_id"],
+        state=DeploymentState.READY.value,
+        runtime_id=stub_runtime["runtime_id"],
     )
 
     run_in_app(api, state.runtimes.supervise_once)
@@ -660,8 +722,13 @@ def test_internal_register_binds_the_runtime(api: Any, runtime_token: Any, state
         "/internal/runtime/register",
         json={
             "token": runtime_token["token"],
-            "capabilities": {"gpu": True, "gpu_name": "Tesla T4", "gpu_memory_mb": 15360,
-                             "cpu_count": 2, "ram_mb": 13000},
+            "capabilities": {
+                "gpu": True,
+                "gpu_name": "Tesla T4",
+                "gpu_memory_mb": 15360,
+                "cpu_count": 2,
+                "ram_mb": 13000,
+            },
         },
     )
     assert response.status_code == 200, response.text
@@ -680,9 +747,13 @@ def test_internal_register_rejects_a_bad_token(api: Any) -> None:
     assert response.status_code == 401
 
 
-def test_desired_state_resolves_store_artifacts(api: Any, runtime_token: Any, stub_runtime: Any) -> None:
+def test_desired_state_resolves_store_artifacts(
+    api: Any, runtime_token: Any, stub_runtime: Any
+) -> None:
     files = {"file": ("m.bin", b"weights", "application/octet-stream")}
-    uploaded = api.post("/api/models/upload", data={"name": "stored", "adapter": "echo"}, files=files).json()
+    uploaded = api.post(
+        "/api/models/upload", data={"name": "stored", "adapter": "echo"}, files=files
+    ).json()
     api.post("/api/deploy", json={"model_id": uploaded["id"], "endpoint": {"route": "stored"}})
 
     response = api.client.get(
@@ -693,11 +764,15 @@ def test_desired_state_resolves_store_artifacts(api: Any, runtime_token: Any, st
     body = response.json()
     assert len(body["deployments"]) == 1
     artifact = body["deployments"][0]["artifact"]
-    assert artifact["download_url"].endswith(f"/internal/artifacts/{uploaded['artifact']['uri'].split('://')[1]}")
+    assert artifact["download_url"].endswith(
+        f"/internal/artifacts/{uploaded['artifact']['uri'].split('://')[1]}"
+    )
     assert body["artifact_auth"]["X-Runtime-Token"] == stub_runtime["token"]
 
 
-def test_desired_state_rejects_a_mismatched_runtime(api: Any, runtime_token: Any, stub_runtime: Any) -> None:
+def test_desired_state_rejects_a_mismatched_runtime(
+    api: Any, runtime_token: Any, stub_runtime: Any
+) -> None:
     response = api.client.get(
         f"/internal/runtime/desired-state?runtime_id={stub_runtime['runtime_id']}",
         headers={"X-Runtime-Token": runtime_token["token"]},
@@ -706,8 +781,9 @@ def test_desired_state_rejects_a_mismatched_runtime(api: Any, runtime_token: Any
 
 
 def test_http_heartbeat_updates_liveness(api: Any, runtime_token: Any, state: Any) -> None:
-    api.client.post("/internal/runtime/register", json={"token": runtime_token["token"],
-                                                        "capabilities": {}})
+    api.client.post(
+        "/internal/runtime/register", json={"token": runtime_token["token"], "capabilities": {}}
+    )
     response = api.client.post(
         "/internal/runtime/heartbeat",
         json={"state": "online", "loaded_models": ["mdl_x@1"], "capabilities": {"gpu": False}},
@@ -722,8 +798,12 @@ def test_http_heartbeat_updates_liveness(api: Any, runtime_token: Any, state: An
 def test_log_shipping_and_retrieval(api: Any, runtime_token: Any) -> None:
     pushed = api.client.post(
         "/internal/runtime/logs",
-        json={"lines": [{"level": "info", "message": "model warmed"},
-                        {"level": "error", "message": "cuda oom"}]},
+        json={
+            "lines": [
+                {"level": "info", "message": "model warmed"},
+                {"level": "error", "message": "cuda oom"},
+            ]
+        },
         headers={"X-Runtime-Token": runtime_token["token"]},
     )
     assert pushed.json()["accepted"] == 2
@@ -738,7 +818,9 @@ def test_log_shipping_and_retrieval(api: Any, runtime_token: Any) -> None:
 # --------------------------------------------------------------------------- #
 # Cache introspection (the UI's Cache page)
 # --------------------------------------------------------------------------- #
-def test_cache_endpoints_expose_the_resilience_buffer(api: Any, stub_runtime: Any, state: Any) -> None:
+def test_cache_endpoints_expose_the_resilience_buffer(
+    api: Any, stub_runtime: Any, state: Any
+) -> None:
     deploy_echo(api, route="inspect")
     serve_with(state, {"label": "pos"})
     api.post("/v1/models/inspect/predict", json={"inputs": {"text": "great"}})
@@ -821,8 +903,12 @@ def test_metrics_are_prometheus_text(api: Any, stub_runtime: Any, state: Any) ->
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
     text = response.text
-    for needle in ("colabdeploy_up 1", "colabdeploy_requests_total 1",
-                   "colabdeploy_cache_entries 1", "# TYPE colabdeploy_up gauge"):
+    for needle in (
+        "colabdeploy_up 1",
+        "colabdeploy_requests_total 1",
+        "colabdeploy_cache_entries 1",
+        "# TYPE colabdeploy_up gauge",
+    ):
         assert needle in text, needle
 
 
@@ -880,7 +966,8 @@ def test_pick_runtime_is_stable_across_calls(api: Any, state: Any) -> None:
     for index in range(3):
         record = AuthService(state.registry).create_runtime_token(f"rt-{index}", 1.0)
         state.relay._conns[record["runtime_id"]] = RelayConnection(
-            runtime_id=record["runtime_id"], ws=StubSocket()  # type: ignore[arg-type]
+            runtime_id=record["runtime_id"],
+            ws=StubSocket(),  # type: ignore[arg-type]
         )
         ids.append(record["runtime_id"])
     picks = {state.runtimes.pick_runtime("ep_same", "mdl_same", 1) for _ in range(10)}
@@ -888,7 +975,9 @@ def test_pick_runtime_is_stable_across_calls(api: Any, state: Any) -> None:
     assert picks.pop() in ids
 
 
-def test_supervise_marks_a_silent_runtime_stale_then_offline(api: Any, stub_runtime: Any, state: Any) -> None:
+def test_supervise_marks_a_silent_runtime_stale_then_offline(
+    api: Any, stub_runtime: Any, state: Any
+) -> None:
     import asyncio
     from datetime import timedelta
 
@@ -901,12 +990,16 @@ def test_supervise_marks_a_silent_runtime_stale_then_offline(api: Any, stub_runt
     assert state.registry.runtimes.get(runtime_id).state.value == "stale"
 
     old = (utcnow() - timedelta(seconds=state.settings.heartbeat_offline_s + 10)).isoformat()
-    state.registry.store.update("runtimes", runtime_id, {"last_heartbeat_at": old, "state": "online"})
+    state.registry.store.update(
+        "runtimes", runtime_id, {"last_heartbeat_at": old, "state": "online"}
+    )
     asyncio.run(state.runtimes.supervise_once())
     assert state.registry.runtimes.get(runtime_id).state.value == "offline"
 
 
-def test_session_cap_warning_sets_an_actionable_error(api: Any, stub_runtime: Any, state: Any) -> None:
+def test_session_cap_warning_sets_an_actionable_error(
+    api: Any, stub_runtime: Any, state: Any
+) -> None:
     """Colab's 12 h cap is unavoidable; the UI must see it coming."""
     import asyncio
     from datetime import timedelta
@@ -916,7 +1009,9 @@ def test_session_cap_warning_sets_an_actionable_error(api: Any, stub_runtime: An
     runtime_id = stub_runtime["runtime_id"]
     started = (utcnow() - timedelta(hours=11, minutes=50)).isoformat()
     state.registry.store.update(
-        "runtimes", runtime_id, {"session_started_at": started, "last_heartbeat_at": utcnow().isoformat()}
+        "runtimes",
+        runtime_id,
+        {"session_started_at": started, "last_heartbeat_at": utcnow().isoformat()},
     )
     report = asyncio.run(state.runtimes.supervise_once())
     assert report["session_warning"] and report["session_warning"][0]["runtime_id"] == runtime_id
