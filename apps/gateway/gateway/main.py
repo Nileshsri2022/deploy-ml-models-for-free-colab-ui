@@ -32,6 +32,7 @@ from gateway import __version__
 from gateway.api import internal as internal_api, management as management_api, v1 as v1_api
 from gateway.api.deps import app_state
 from gateway.core.config import get_settings
+from gateway.core.redis_store import registry_status
 from gateway.state import AppState, build_state, set_state
 
 
@@ -131,11 +132,23 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @app.get("/healthz", tags=["meta"])
     async def healthz(request: Request) -> Any:
         st = app_state(request)
+        # Cheap mirror health (no Redis round-trip), so `curl /healthz` from
+        # Render's logs page is enough to tell "not configured" from
+        # "configured but unreachable" without opening the UI.
+        registry = registry_status(st.store, st.settings)
         return {
             "status": "ok",
             "version": __version__,
             "runtimes_online": len(st.relay.connected_runtime_ids),
             "cache_entries": st.cache.stats().entries,
+            "registry": {
+                "backend": registry["backend"],
+                "connected": registry["connected"],
+                "state": registry["state"],
+                "reason": registry.get("reason", ""),
+                "pending": registry.get("pending", 0),
+                "message": registry.get("message", ""),
+            },
             "uptime_s": round(time.time() - st.telemetry.started_at, 1),
         }
 

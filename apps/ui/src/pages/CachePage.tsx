@@ -36,7 +36,18 @@ interface UpstashView {
   pending: number
   collections: Record<string, number>
   keys: UpstashKey[]
+  /** Why the mirror is not live: 'no_url' | 'bad_url' | 'library_missing' | … */
+  reason?: string
+  /** 'connected' | 'retry' | 'backoff' | 'unreachable' | 'invalid_url' | 'disabled' */
+  state?: string
+  configured?: boolean
+  host?: string
+  /** The exact client error (ConnectionError, TimeoutError, NOAUTH…), if any. */
+  last_error?: string
+  retry_in_s?: number
+  restored?: number
   message?: string
+  hint?: string
   error?: string
 }
 
@@ -104,12 +115,37 @@ export default function CachePage() {
   const syncNow = async () => {
     setBusy(true)
     try {
-      const result = await api.post<{ synced: boolean; reason?: string }>('/api/upstash/sync')
-      if (result.synced) toast('success', 'Flushed local registry to Upstash')
-      else toast('info', 'Upstash not configured', result.reason ?? '')
+      const result = await api.post<{
+        synced: boolean
+        reason?: string
+        message?: string
+        hint?: string
+        pushed?: number
+      }>('/api/upstash/sync')
+      if (result.synced) {
+        toast('success', 'Flushed local registry to Upstash', result.pushed ? `${result.pushed} key(s) pushed` : '')
+      } else {
+        // "not synced" is never a silent no-op: name the hop that failed.
+        toast('error', result.message || 'Upstash did not accept the write', result.hint || result.reason || '')
+      }
       await load()
     } catch (err) {
       toast('error', 'Sync failed', (err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Retry the connection now, skipping the 30 s reconnect backoff. */
+  const reconnect = async () => {
+    setBusy(true)
+    try {
+      const status = await api.post<UpstashView>('/api/upstash/reconnect')
+      if (status.connected) toast('success', 'Connected to Upstash', status.host ?? '')
+      else toast('info', status.message || 'Upstash still unreachable', status.hint ?? '')
+      await load()
+    } catch (err) {
+      toast('error', 'Reconnect failed', (err as Error).message)
     } finally {
       setBusy(false)
     }
@@ -141,6 +177,9 @@ export default function CachePage() {
           <button type="button" onClick={() => void load()}>
             ↻ Refresh
           </button>
+          <button type="button" disabled={busy} onClick={() => void reconnect()}>
+            ⚡ Reconnect
+          </button>
           <button type="button" disabled={busy || !connected} onClick={() => void syncNow()}>
             {busy ? <Spinner label="syncing…" /> : '☁ Sync to Upstash'}
           </button>
@@ -153,8 +192,25 @@ export default function CachePage() {
       )}
       {view && !view.connected && (
         <Banner tone="amber">
-          {view.message ||
-            'Upstash is not connected. Set CDP_REGISTRY_BACKEND=redis and CDP_REDIS_URL to a rediss:// Upstash URL.'}
+          <div className="stack">
+            <strong>{view.message || 'Upstash is not connected.'}</strong>
+            <span className="small">
+              {view.enabled
+                ? 'The gateway was told to mirror the registry'
+                : 'The gateway is not running with CDP_REGISTRY_BACKEND=redis'}
+              {view.configured ? ', and it did read a CDP_REDIS_URL' : ', and this process has no CDP_REDIS_URL'}.
+              {view.retry_in_s ? ` Retrying in ${Math.ceil(view.retry_in_s)} s.` : ''}
+            </span>
+            {view.hint ? <span className="small">{view.hint}</span> : null}
+            {view.last_error ? (
+              <code className="small mono" style={{ overflowWrap: 'anywhere' }}>
+                {view.last_error}
+              </code>
+            ) : null}
+            <span className="small">
+              Env changes only take effect on the next deploy: the gateway reads CDP_* once at process start.
+            </span>
+          </div>
         </Banner>
       )}
       {view?.error && <Banner tone="red">{view.error}</Banner>}
@@ -163,9 +219,13 @@ export default function CachePage() {
         <Card>
           <Stat
             label="Status"
-            value={connected ? 'connected' : 'offline'}
-            tone={connected ? 'green' : undefined}
-            hint={view?.namespace ?? 'no namespace'}
+            value={connected ? 'connected' : (view?.state ?? 'offline')}
+            tone={connected ? 'green' : view?.enabled && view?.configured ? 'red' : 'amber'}
+            hint={
+              connected
+                ? view?.host || view?.namespace
+                : view?.reason || view?.namespace || 'no namespace'
+            }
           />
         </Card>
         <Card>
@@ -222,7 +282,9 @@ export default function CachePage() {
               body={
                 connected
                   ? 'Deploy a model or publish an endpoint — each registry write is mirrored here after the next sync window.'
-                  : 'The gateway is running on local JSON only. Add an Upstash Redis URL to persist the registry across host recycles.'
+                  : view?.enabled && view?.configured
+                    ? 'The gateway is configured for Upstash and has the registry on disk, but the connection is not up yet — the banner above names the exact error, and Reconnect retries without waiting for the backoff.'
+                    : 'The gateway is running on local JSON only. Add an Upstash Redis URL to persist the registry across host recycles.'
               }
             />
           ) : (

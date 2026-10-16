@@ -426,6 +426,12 @@ label.field > span {
 .row.end {
   justify-content: flex-end;
 }
+/* Vertical sibling spacing, e.g. a banner that carries a reason + a hint. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .spread {
   display: flex;
   align-items: center;

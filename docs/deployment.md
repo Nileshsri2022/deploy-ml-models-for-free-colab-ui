@@ -161,6 +161,33 @@ of *mirror* data (the local disk copy is always immediate; graceful shutdown
 flushes the mirror synchronously). While the gateway runs, a daily no-op
 keepalive write prevents the Upstash idle-archival from ever triggering.
 
+### "Upstash is not connected" — triage
+
+The ⚡ *Upstash cache* page never guesses: `GET /api/upstash/status` (and the
+banner itself) returns `state`, `reason`, `last_error` and a `hint`. Match the
+reason:
+
+| `reason` | What it means | Fix |
+| --- | --- | --- |
+| `backend_file` | the process read `CDP_REGISTRY_BACKEND` as something other than `redis` | set it, then **redeploy** — `CDP_*` is read once at process start |
+| `no_url` | `CDP_REGISTRY_BACKEND=redis` is visible but `CDP_REDIS_URL` is not, *in that process* | a secret added after the first deploy is only injected on the next one: Environment → *Add Secret Value* → *Manual Deploy → Clear cache & deploy*. Values wrapped in quotes are trimmed since this release, so a pasted `"rediss://…"` no longer counts as empty-but-broken |
+| `bad_url` | the value is not a Redis URL — usually Upstash's **REST** endpoint (`https://…`), the *read-only* replica, or `redis://` (no TLS) against `…upstash.io` | copy the **Redis URL** (`rediss://default:<token>@host:6379`) from the Upstash console |
+| `library_missing` | no `redis` Python client in the image | the Dockerfile installs `./apps/gateway[redis]`; a custom Build command or a bare `requirements.txt` drops the extra — add `redis>=5.0` |
+| `unreachable` / `backoff` | the URL is fine and the connection failed | `last_error` says which: DNS (`getaddrinfo`), egress blocked on 6379 (`timed out`), `NOAUTH` (rotated token), `max number of clients` (connection cap), or Upstash restoring an archived DB (~1 min, then press **Reconnect**) |
+
+`/healthz` carries the same `registry` block, so triage works with curl alone:
+
+```bash
+curl -s https://your-host/healthz | jq .registry
+# {"backend":"upstash","connected":true,"state":"connected","reason":"","pending":0,...}
+```
+
+Useful knobs while debugging: `CDP_REGISTRY_CONNECT_BACKOFF_S` (default 30 —
+how long to wait before re-probing a Redis that just refused us) and
+`CDP_REGISTRY_SYNC_S` (how often dirty keys are pushed). *Reconnect* in the UI
+clears the backoff and flushes immediately, so you do not have to restart the
+service after waking an Upstash database.
+
 ---
 
 ## First boot
