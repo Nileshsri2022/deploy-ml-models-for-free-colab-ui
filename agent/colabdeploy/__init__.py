@@ -11,8 +11,16 @@ without duplicating servers or tunnels, and re-hydrates models from the on-disk
 cache so a resume takes seconds instead of minutes.
 """
 
-from colabdeploy.launch import launch, launch_in_thread, main, status
+from colabdeploy.launch import AgentSession, launch, launch_in_thread, main, status, stop
 
 __version__ = "0.1.0"
 
-__all__ = ["__version__", "launch", "launch_in_thread", "main", "status"]
+__all__ = [
+    "__version__",
+    "AgentSession",
+    "launch",
+    "launch_in_thread",
+    "main",
+    "status",
+    "stop",
+]
