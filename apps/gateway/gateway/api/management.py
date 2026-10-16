@@ -8,7 +8,10 @@ Grouped by concern:
 * ``/api/models``     - register model versions (with artifact upload)
 * ``/api/endpoints``  - publish, tune (cache TTL / degradation), delete
 * ``/api/deploy``     - the deploy wizard's single call, plus rollback
-* ``/api/cache``      - inspect the Upstash Redis registry mirror (UI Cache page)
+* ``/api/cache``      - the inference cache: stats, entries, invalidate, save
+* ``/api/upstash``    - the Redis registry mirror (UI Cache page): status, keys,
+  reconnect and a manual flush. ``status`` carries ``reason`` + ``last_error``
+  so "not connected" always explains itself.
 * ``/api/logs``       - ring buffer + SSE live tail
 * ``/api/jobs``       - queued-while-offline work
 """
@@ -39,7 +42,7 @@ from colabdeploy_shared.schemas import (
     RuntimeTokenInfo,
 )
 from gateway.api.deps import app_state, manage_dependency
-from gateway.core.redis_store import RedisSnapshotStore
+from gateway.core.redis_store import RedisSnapshotStore, mirror_advice, registry_status
 
 router = APIRouter(prefix="/api", tags=["management"])
 
@@ -544,23 +547,54 @@ def _upstash(request: Request) -> RedisSnapshotStore | None:
     return store if isinstance(store, RedisSnapshotStore) else None
 
 
+def _empty_view(request: Request, *, limit: int = 0) -> dict[str, Any]:
+    """The shape of an inspector view when there is no mirror, plus the reason.
+
+    The Cache page renders whatever ``message`` says, so the fallback has to
+    carry the real diagnosis ("the redis client is not in the image", "URL
+    empty in this process") rather than a generic "set the env vars" hint that
+    is wrong for a gateway that *is* configured.
+    """
+    status = registry_status(app_state(request).store, app_state(request).settings)
+    return {
+        "connected": False,
+        "count": 0,
+        "entries": 0,
+        "shown": 0,
+        "size_bytes": 0,
+        "keys": [],
+        "collections": {},
+        "limit": limit,
+        **status,
+    }
+
+
+@router.get("/upstash/status")
+async def upstash_status(request: Request, principal: Any = Manage) -> Any:
+    """Mirror health: configured / connected / why not. Never touches Redis."""
+    state = app_state(request)
+    out = registry_status(state.store, state.settings)
+    out["restored"] = int(getattr(state, "registry_restored", 0))
+    return out
+
+
+@router.post("/upstash/reconnect")
+async def upstash_reconnect(request: Request, principal: Any = Manage) -> Any:
+    """Retry the connection now instead of waiting out the backoff window."""
+    store = _upstash(request)
+    if store is None:
+        return {"connected": False, **_empty_view(request)}
+    status = store.reconnect()
+    status["message"], status["hint"] = mirror_advice(status) if not status["connected"] else ("", "")
+    return status
+
+
 @router.get("/upstash/stats")
 async def upstash_stats(request: Request, principal: Any = Manage) -> Any:
     """What is actually in Upstash Redis — registry metadata only."""
     store = _upstash(request)
     if store is None:
-        settings = app_state(request).settings
-        return {
-            "connected": False,
-            "backend": "upstash",
-            "enabled": (getattr(settings, "registry_backend", "file") or "file").lower() == "redis",
-            "entries": 0,
-            "size_bytes": 0,
-            "pending": 0,
-            "collections": {},
-            "keys": [],
-            "message": "CDP_REGISTRY_BACKEND=redis and CDP_REDIS_URL are required",
-        }
+        return _empty_view(request)
     view = store.inspect(limit=1)
     view.pop("keys", None)
     view["enabled"] = True
@@ -576,7 +610,7 @@ async def upstash_keys(
 ) -> Any:
     store = _upstash(request)
     if store is None:
-        return {"connected": False, "count": 0, "keys": [], "collections": {}}
+        return _empty_view(request, limit=limit)
     view = store.inspect(limit=limit, collection=collection)
     return view
 
@@ -585,7 +619,8 @@ async def upstash_keys(
 async def upstash_key(key: str, request: Request, principal: Any = Manage) -> Any:
     store = _upstash(request)
     if store is None:
-        return _err("Upstash is not configured", "NOT_CONFIGURED", 404)
+        status = registry_status(app_state(request).store, app_state(request).settings)
+        return _err(status["message"] or "Upstash is not configured", "NOT_CONFIGURED", 404)
     row = store.inspect_key(key)
     if row is None:
         return _err(f"redis key '{key}' not found", "NOT_FOUND", 404)
@@ -596,7 +631,8 @@ async def upstash_key(key: str, request: Request, principal: Any = Manage) -> An
 async def delete_upstash_key(key: str, request: Request, principal: Any = Manage) -> Any:
     store = _upstash(request)
     if store is None:
-        return _err("Upstash is not configured", "NOT_CONFIGURED", 404)
+        status = registry_status(app_state(request).store, app_state(request).settings)
+        return _err(status["message"] or "Upstash is not configured", "NOT_CONFIGURED", 404)
     return {"deleted": key, "found": store.drop_key(key)}
 
 
@@ -605,9 +641,15 @@ async def upstash_sync(request: Request, principal: Any = Manage) -> Any:
     """Flush pending local registry writes to Redis now."""
     store = _upstash(request)
     if store is None:
-        return {"synced": False, "reason": "not configured"}
-    store._sync_once()
-    return {"synced": True, "stats": store.sync_stats(), "view": store.inspect(limit=1)}
+        view = _empty_view(request)
+        return {
+            "synced": False,
+            "reason": view.get("reason") or "not configured",
+            "message": view.get("message") or "",
+            "hint": view.get("hint") or "",
+            "stats": {"pending": 0},
+        }
+    return store.flush()
 
 
 # --------------------------------------------------------------------------- #

@@ -12,6 +12,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _str(name: str, default: str = "") -> str:
+    """Env string, trimmed of the surrounding quotes that copy-paste brings.
+
+    Pasting a Render/Heroku value with its quotes left in — ``"rediss://…"`` —
+    otherwise reaches the Redis client verbatim and fails as an opaque
+    "ConnectionError: unknown scheme", which looks like a network bug.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        raw = raw[1:-1].strip()
+    return raw
+
+
 def _bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -38,24 +54,24 @@ class Settings:
     # --- identity ---------------------------------------------------------
     app_name: str = "ColabDeploy"
     version: str = "0.1.0"
-    env: str = field(default_factory=lambda: os.getenv("CDP_ENV", "development"))
+    env: str = field(default_factory=lambda: _str("CDP_ENV", "development"))
 
     # --- server -----------------------------------------------------------
-    host: str = field(default_factory=lambda: os.getenv("CDP_HOST", "0.0.0.0"))
+    host: str = field(default_factory=lambda: _str("CDP_HOST", "0.0.0.0"))
     port: int = field(default_factory=lambda: _int("CDP_PORT", 8000))
     public_base_url: str = field(
-        default_factory=lambda: os.getenv("CDP_PUBLIC_URL", "").rstrip("/")
+        default_factory=lambda: _str("CDP_PUBLIC_URL").rstrip("/")
     )
     cors_origins: list[str] = field(
         default_factory=lambda: [
             o.strip()
-            for o in os.getenv("CDP_CORS_ORIGINS", "*").split(",")
+            for o in _str("CDP_CORS_ORIGINS", "*").split(",")
             if o.strip()
         ]
     )
 
     # --- persistence ------------------------------------------------------
-    data_dir: Path = field(default_factory=lambda: Path(os.getenv("CDP_DATA_DIR", ".data")))
+    data_dir: Path = field(default_factory=lambda: Path(_str("CDP_DATA_DIR", ".data")))
 
     # --- registry mirror (optional; survives free-tier container recycling) ---
     # "file"  -> JSON under data_dir/store (original behaviour);
@@ -63,9 +79,9 @@ class Settings:
     #           Point CDP_REDIS_URL at a free Upstash database (rediss://...);
     #           Render's own free Key Value is in-memory only and will NOT do.
     registry_backend: str = field(
-        default_factory=lambda: os.getenv("CDP_REGISTRY_BACKEND", "file")
+        default_factory=lambda: _str("CDP_REGISTRY_BACKEND", "file")
     )
-    redis_url: str = field(default_factory=lambda: os.getenv("CDP_REDIS_URL", ""))
+    redis_url: str = field(default_factory=lambda: _str("CDP_REDIS_URL"))
     # Coalesce mirror writes: mutations of the same key within this window cost
     # one SET. 0 = write through on every mutation. The local disk copy is
     # always written immediately either way; this only paces Redis traffic.
@@ -75,9 +91,14 @@ class Settings:
     registry_keepalive_s: float = field(
         default_factory=lambda: _float("CDP_REGISTRY_KEEPALIVE_S", 86400.0)
     )
+    # How long to wait before re-probing a Redis that just refused us. Lower it
+    # while debugging a flaky network, so "Reconnect" does not wait half a minute.
+    registry_connect_backoff_s: float = field(
+        default_factory=lambda: _float("CDP_REGISTRY_CONNECT_BACKOFF_S", 30.0)
+    )
 
     # --- cache ------------------------------------------------------------
-    cache_backend: str = field(default_factory=lambda: os.getenv("CDP_CACHE_BACKEND", "memory"))
+    cache_backend: str = field(default_factory=lambda: _str("CDP_CACHE_BACKEND", "memory"))
     cache_max_entries: int = field(default_factory=lambda: _int("CDP_CACHE_MAX_ENTRIES", 20000))
     cache_max_bytes: int = field(
         default_factory=lambda: _int("CDP_CACHE_MAX_BYTES", 256 * 1024 * 1024)
@@ -116,7 +137,7 @@ class Settings:
     metrics_buffer_points: int = field(default_factory=lambda: _int("CDP_METRICS_BUFFER", 20000))
 
     # --- security ---------------------------------------------------------
-    bootstrap_admin_key: str = field(default_factory=lambda: os.getenv("CDP_ADMIN_KEY", ""))
+    bootstrap_admin_key: str = field(default_factory=lambda: _str("CDP_ADMIN_KEY"))
     require_auth: bool = field(default_factory=lambda: _bool("CDP_REQUIRE_AUTH", True))
     allow_anonymous_inference: bool = field(
         default_factory=lambda: _bool("CDP_ALLOW_ANONYMOUS_INFERENCE", False)
@@ -124,14 +145,14 @@ class Settings:
 
     # --- colab relaunch ---------------------------------------------------
     colab_repo: str = field(
-        default_factory=lambda: os.getenv(
+        default_factory=lambda: _str(
             "CDP_COLAB_REPO", "Nileshsri2022/deploy-ml-models-for-free-colab-ui"
         )
     )
     colab_notebook_path: str = field(
-        default_factory=lambda: os.getenv("CDP_COLAB_NOTEBOOK", "agent/colab_agent.ipynb")
+        default_factory=lambda: _str("CDP_COLAB_NOTEBOOK", "agent/colab_agent.ipynb")
     )
-    colab_branch: str = field(default_factory=lambda: os.getenv("CDP_COLAB_BRANCH", "main"))
+    colab_branch: str = field(default_factory=lambda: _str("CDP_COLAB_BRANCH", "main"))
 
     # --- artifact store ---------------------------------------------------
     artifact_dir: Path | None = None  # derived: data_dir / "artifacts"

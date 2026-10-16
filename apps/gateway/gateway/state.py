@@ -13,7 +13,7 @@ from typing import Any
 from gateway.core.cache import CacheBackend, build_cache
 from gateway.core.config import Settings, get_settings, reset_settings
 from gateway.core.logging import SseHub, Telemetry
-from gateway.core.redis_store import RedisSnapshotStore, build_registry_store
+from gateway.core.redis_store import RedisSnapshotStore, build_registry_store, registry_status
 from gateway.core.repository import COLLECTIONS, Registry
 from gateway.services.deployments import DeploymentService
 from gateway.services.inference import InferenceService
@@ -30,6 +30,9 @@ class AppState:
         # CDP_REGISTRY_BACKEND=redis; otherwise it is the plain file store.
         self.store = build_registry_store(settings)
         self.registry_restored = 0
+        # Health of the mirror (connected / disabled / unreachable + why), for
+        # /healthz and the Cache page. Refreshed on startup and on demand.
+        self.registry_status: dict[str, Any] = {}
         if isinstance(self.store, RedisSnapshotStore):
             self.registry_restored = self.store.warm([*COLLECTIONS, "inference_usage"])
         self.registry = Registry(self.store)
@@ -77,11 +80,17 @@ class AppState:
     async def startup(self) -> None:
         await self.runtimes.start_async()
         mirror = "registry restored from Redis" if self.registry_restored else ""
+        status = registry_status(self.store, self.settings)
+        if not status["connected"]:
+            # Say once at boot what the Cache page will keep repeating: a
+            # missing dependency, an empty env var, or an unreachable database.
+            mirror = f"registry mirror {status['state']}: {status.get('message') or status.get('last_error') or ''}".strip()
         self.telemetry.log(
             f"control plane up (cache={self.cache.name}, data_dir={self.settings.data_dir})"
             + (f" [{mirror}]" if mirror else ""),
             data={"version": self.settings.version, "env": self.settings.env},
         )
+        self.registry_status = status
 
     async def shutdown(self) -> None:
         await self.runtimes.stop()
