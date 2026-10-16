@@ -317,10 +317,13 @@ that says why.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/logs?limit=&level=&runtime_id=` | the persisted ring buffer, newest first |
+| `GET /api/public-config` | unauthenticated UI bootstrap settings; may include the public Sentry DSN, never the read token |
+| `GET /api/logs?limit=&level=&runtime_id=` | bounded, process-local gateway log buffer, newest first |
 | `GET /api/logs/stream?api_key=…` | **SSE** live tail (gateway + relay + agent lines) |
+| `GET /api/sentry/issues?limit=` | manage-key-only, allowlisted issue summaries fetched from Sentry using a gateway-only read token |
 | `GET /api/audit?limit=` | who changed what: deploys, key mints, rollbacks, revocations |
 | `GET /api/telemetry` | request counters, latency percentiles, relay health, cache stats, SSE subscribers |
+| `GET /api/upstash/stats` · `GET /api/upstash/keys` | Redis mirror status, including last sanitized connection/sync failure when available |
 | `GET /api/jobs?state=` · `POST /api/jobs/{id}/retry` | the queue |
 
 ---

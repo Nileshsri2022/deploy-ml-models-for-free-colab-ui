@@ -43,12 +43,15 @@ interface UpstashView {
   configured?: boolean
   host?: string
   /** The exact client error (ConnectionError, TimeoutError, NOAUTH…), if any. */
-  last_error?: string
+  last_error?: string | null
   retry_in_s?: number
   restored?: number
   message?: string
   hint?: string
   error?: string
+  status?: 'connected' | 'connecting' | 'disconnected' | 'misconfigured' | 'disabled'
+  last_error_at?: string | null
+  last_success_at?: string | null
 }
 
 /**
@@ -187,6 +190,12 @@ export default function CachePage() {
       </div>
 
       {error && <Banner tone="red">{error}</Banner>}
+      {view?.last_error && (
+        <Banner tone="red">
+          Upstash registry mirror is unavailable: {view.last_error}
+          {view.last_error_at ? ` · last failure ${new Date(view.last_error_at).toLocaleString()}` : ''}
+        </Banner>
+      )}
       {stale && !error && (
         <Banner>Showing the last-known-good Upstash view — the control plane did not answer.</Banner>
       )}
@@ -202,24 +211,19 @@ export default function CachePage() {
               {view.retry_in_s ? ` Retrying in ${Math.ceil(view.retry_in_s)} s.` : ''}
             </span>
             {view.hint ? <span className="small">{view.hint}</span> : null}
-            {view.last_error ? (
-              <code className="small mono" style={{ overflowWrap: 'anywhere' }}>
-                {view.last_error}
-              </code>
-            ) : null}
             <span className="small">
               Env changes only take effect on the next deploy: the gateway reads CDP_* once at process start.
             </span>
           </div>
         </Banner>
       )}
-      {view?.error && <Banner tone="red">{view.error}</Banner>}
+      {view?.error && !view.last_error && <Banner tone="red">{view.error}</Banner>}
 
       <div className="grid cols-4">
         <Card>
           <Stat
             label="Status"
-            value={connected ? 'connected' : (view?.state ?? 'offline')}
+            value={connected ? 'connected' : (view?.state ?? view?.status ?? 'offline')}
             tone={connected ? 'green' : view?.enabled && view?.configured ? 'red' : 'amber'}
             hint={
               connected
@@ -284,7 +288,7 @@ export default function CachePage() {
                   ? 'Deploy a model or publish an endpoint — each registry write is mirrored here after the next sync window.'
                   : view?.enabled && view?.configured
                     ? 'The gateway is configured for Upstash and has the registry on disk, but the connection is not up yet — the banner above names the exact error, and Reconnect retries without waiting for the backoff.'
-                    : 'The gateway is running on local JSON only. Add an Upstash Redis URL to persist the registry across host recycles.'
+                    : view?.message ?? 'The gateway is running on local JSON only. Add an Upstash Redis URL to persist the registry across host recycles.'
               }
             />
           ) : (

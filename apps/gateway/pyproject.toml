@@ -35,9 +35,11 @@ Repository = "https://github.com/Nileshsri2022/deploy-ml-models-for-free-colab-u
 Issues = "https://github.com/Nileshsri2022/deploy-ml-models-for-free-colab-ui/issues"
 
 [project.optional-dependencies]
-# `redis` is optional so the control plane stays dependency-light by default;
-# the deploy image installs it. dev includes fakeredis so the mirror tests run.
+# `redis` and `sentry` are optional so the control plane stays dependency-light
+# by default; the deploy image installs both. dev includes fakeredis so mirror
+# tests run without a live Redis service.
 redis = ["redis>=5.0"]
+sentry = ["sentry-sdk[fastapi]>=2.72.0"]
 dev = ["pytest>=8", "ruff>=0.5", "websockets>=12", "fakeredis>=2.23"]
 
 [project.scripts]

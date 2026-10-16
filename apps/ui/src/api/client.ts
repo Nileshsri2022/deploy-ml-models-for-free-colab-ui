@@ -117,10 +117,18 @@ export function gatewayUrl(): string {
   return getGatewayUrl() || (typeof window === 'undefined' ? '' : window.location.origin)
 }
 
+function newRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
+
 function headers(extra: Record<string, string> = {}): Record<string, string> {
   const key = getApiKey()
   return {
     Accept: 'application/json',
+    'X-Request-Id': newRequestId(),
     ...(key ? { Authorization: `Bearer ${key}` } : {}),
     ...extra,
   }
