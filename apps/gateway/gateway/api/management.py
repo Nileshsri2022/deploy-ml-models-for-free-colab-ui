@@ -20,8 +20,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 from colabdeploy_shared.enums import JobState
+from colabdeploy_shared.hf import check_hf_uri, is_hf_uri
 from colabdeploy_shared.schemas import (
     ApiKeyCreate,
     CacheEntryInfo,
@@ -227,6 +229,25 @@ async def register_model(body: ModelCreate, request: Request, principal: Any = M
     except ValueError as exc:
         return _err(str(exc))
     return JSONResponse(status_code=201, content=state.deployments.model_view(model))
+
+
+class HfCheckBody(BaseModel):
+    uri: str = Field(min_length=1, max_length=400)
+    task: str | None = Field(default=None, max_length=64)
+
+
+@router.post("/models/hf-check")
+async def check_hf_model(body: HfCheckBody, principal: Any = Manage) -> Any:
+    """Spec 6.3: name-based checks for a Hub model, so the UI can warn before deploy.
+
+    Does not contact the Hub. The agent reports missing or private repos at load time.
+    """
+    if not is_hf_uri(body.uri):
+        return _err("uri must start with hf://")
+    try:
+        return check_hf_uri(body.uri, body.task).as_dict()
+    except ValueError as exc:
+        return _err(str(exc))
 
 
 @router.post("/models/upload", status_code=201)

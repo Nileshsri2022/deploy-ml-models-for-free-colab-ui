@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from colabdeploy_shared.enums import AdapterKind
+from colabdeploy_shared.hf import parse_hf_uri
 from colabdeploy_shared.schemas import ArtifactSpec, ModelSchema
 
 from .base import AdapterError, ModelAdapter, ModelMeta, jsonable, payload_image_bytes, payload_text
@@ -50,7 +51,7 @@ class HuggingFaceAdapter(ModelAdapter):
         self.task = str(extra.get("task") or meta.entrypoint or "text-classification")
         uri = meta.artifact.uri
         if uri.startswith("hf://"):
-            self.repo = uri.split("://", 1)[1].split("/", 1)[0]
+            self.repo = parse_hf_uri(uri).repo
         elif artifact_path.is_dir():
             self.repo = str(artifact_path)
         else:

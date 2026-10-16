@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from colabdeploy_shared.hf import parse_hf_uri
 from colabdeploy_shared.schemas import ArtifactSpec
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
@@ -214,8 +215,8 @@ class ArtifactResolver:
         scheme = uri_scheme(uri)
 
         # HuggingFace repo without a filename: the pipeline handles the download.
-        if uri.startswith("hf://") and "/" not in uri.split("://", 1)[1]:
-            repo = uri.split("://", 1)[1]
+        if uri.startswith("hf://") and parse_hf_uri(uri).is_repo_only:
+            repo = parse_hf_uri(uri).repo
             placeholder = self.cache.blobs / f"hf-{hashlib.sha256(repo.encode()).hexdigest()[:16]}"
             placeholder.mkdir(parents=True, exist_ok=True)
             return ResolvedArtifact(
@@ -376,8 +377,8 @@ class ArtifactResolver:
             )
 
     def _fetch_hf(self, uri: str, target: Path) -> None:
-        rest = uri.split("://", 1)[1]
-        repo, _, filename = rest.partition("/")
+        ref = parse_hf_uri(uri)
+        repo, filename = ref.repo, ref.filename or ""
         if not filename:
             raise ArtifactError(
                 f"cannot resolve '{uri}' - use hf://<repo>/<filename> or let the pipeline download it"

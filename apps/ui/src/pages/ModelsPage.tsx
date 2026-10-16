@@ -22,11 +22,118 @@ type Tab = 'list' | 'register' | 'upload'
 
 const URI_EXAMPLES = [
   ['Google Drive', 'gdrive://1AbCdefGhIjKlMnOpQrStUvWxYz012345'],
-  ['Hugging Face', 'hf://org/repo/model.onnx'],
+  ['Hugging Face', 'hf://distilgpt2'],
+  ['Hugging Face (owner/name)', 'hf://Qwen/Qwen2.5-1.5B-Instruct-GPTQ-Int4'],
   ['HTTP(S)', 'https://example.com/model.pkl'],
   ['Already on the VM', 'file:///content/drive/MyDrive/model.joblib'],
   ['Uploaded via this UI', 'store://art_0123456789abcdef'],
 ]
+
+type HfTaskPreset = {
+  task: string
+  label: string
+  input: Record<string, unknown>
+  output: Record<string, unknown>
+  warmup: Record<string, unknown> | null
+  note?: string
+}
+
+// Phase 1 tasks from docs/specs/huggingface-ui-spec.md section 5. Each preset fills the
+// schemas and warm-up sample; the user can still edit them.
+const HF_TASKS: HfTaskPreset[] = [
+  {
+    task: 'text-classification',
+    label: 'Text classification (sentiment, topic)',
+    input: { fields: { text: { type: 'string' } }, required: ['text'], example: { text: 'this is a great little demo' } },
+    output: { fields: { label: { type: 'string' }, score: { type: 'number' } }, required: [], example: { label: 'POSITIVE', score: 0.99 } },
+    warmup: { inputs: { text: 'this is a great little demo' } },
+  },
+  {
+    task: 'text-generation',
+    label: 'Text generation',
+    input: { fields: { text: { type: 'string' } }, required: ['text'], example: { text: 'Answer briefly: What is the capital of France? Answer:' } },
+    output: { fields: { text: { type: 'string' } }, required: [], example: { text: 'Paris' } },
+    warmup: { inputs: { text: 'Answer briefly: What is the capital of France? Answer:' } },
+    note: 'Instruction models take plain prompts here, not chat messages. Write the input as something to complete.',
+  },
+  {
+    task: 'token-classification',
+    label: 'Token classification (named entities)',
+    input: { fields: { text: { type: 'string' } }, required: ['text'], example: { text: 'My name is Sarah and I live in London' } },
+    output: { fields: {}, required: [], example: null },
+    warmup: { inputs: { text: 'My name is Sarah and I live in London' } },
+  },
+  {
+    task: 'zero-shot-classification',
+    label: 'Zero-shot classification',
+    input: {
+      fields: { text: { type: 'string' }, candidate_labels: { type: 'array' } },
+      required: ['text', 'candidate_labels'],
+      example: { text: 'I just bought a new laptop', candidate_labels: ['technology', 'sports', 'food'] },
+    },
+    output: { fields: {}, required: [], example: null },
+    warmup: { inputs: { text: 'I just bought a new laptop', candidate_labels: ['technology', 'sports', 'food'] } },
+  },
+  {
+    task: 'summarization',
+    label: 'Summarization',
+    input: { fields: { text: { type: 'string' } }, required: ['text'], example: { text: 'Long article text goes here.' } },
+    output: { fields: { text: { type: 'string' } }, required: [], example: { text: 'Short summary.' } },
+    warmup: { inputs: { text: 'The city council met on Monday to discuss the new park plan. Residents asked for more trees and benches, and the council agreed to review the budget next week.' } },
+  },
+  {
+    task: 'translation',
+    label: 'Translation',
+    input: { fields: { text: { type: 'string' } }, required: ['text'], example: { text: 'How are you?' } },
+    output: { fields: { text: { type: 'string' } }, required: [], example: { text: 'Comment allez-vous ?' } },
+    warmup: { inputs: { text: 'How are you?' } },
+    note: 'Translation models are usually tied to one language pair (for example opus-mt-en-fr). Check the model card.',
+  },
+  {
+    task: 'question-answering',
+    label: 'Question answering',
+    input: {
+      fields: { question: { type: 'string' }, context: { type: 'string' } },
+      required: ['question', 'context'],
+      example: { question: 'Where do I live?', context: 'My name is Sarah and I live in London.' },
+    },
+    output: { fields: {}, required: [], example: null },
+    warmup: { inputs: { question: 'Where do I live?', context: 'My name is Sarah and I live in London.' } },
+  },
+  {
+    task: 'fill-mask',
+    label: 'Fill mask',
+    input: { fields: { text: { type: 'string' } }, required: ['text'], example: { text: 'Paris is the [MASK] of France.' } },
+    output: { fields: {}, required: [], example: null },
+    warmup: { inputs: { text: 'Paris is the [MASK] of France.' } },
+    note: 'The mask token depends on the model: [MASK] for BERT-style models, <mask> for RoBERTa-style models.',
+  },
+  {
+    task: 'feature-extraction',
+    label: 'Feature extraction (embeddings)',
+    input: { fields: { text: { type: 'string' } }, required: ['text'], example: { text: 'hello world' } },
+    output: { fields: {}, required: [], example: null },
+    warmup: { inputs: { text: 'hello world' } },
+    note: 'Returns one vector per token, which can be a large response.',
+  },
+  {
+    task: 'image-classification',
+    label: 'Image classification',
+    input: { fields: { image: { type: 'string' } }, required: ['image'], example: { image: '<base64 image>' } },
+    output: { fields: { label: { type: 'string' }, score: { type: 'number' } }, required: [], example: null },
+    warmup: null,
+    note: 'Send the image as base64 text in the image field. No warm-up sample is set, because it needs a real image.',
+  },
+]
+
+type HfCheck = {
+  repo: string
+  filename: string | null
+  task: string
+  ok: boolean
+  blockers: string[]
+  warnings: string[]
+}
 
 /**
  * Model registry: register by URI, or upload an artifact through the browser.
@@ -59,6 +166,12 @@ export default function ModelsPage() {
   const [tags, setTags] = useState('')
   const [busy, setBusy] = useState(false)
 
+  // Hugging Face panel (spec section 6.1)
+  const [hfTask, setHfTask] = useState('text-classification')
+  const [hfCheck, setHfCheck] = useState<HfCheck | null>(null)
+  const isHf = uri.trim().toLowerCase().startsWith('hf://')
+  const hfPreset = HF_TASKS.find((preset) => preset.task === hfTask) ?? HF_TASKS[0]
+
   // upload form
   const [file, setFile] = useState<File | null>(null)
 
@@ -87,9 +200,44 @@ export default function ModelsPage() {
     return () => clearInterval(timer)
   }, [load])
 
+  // A Hub URI always uses the huggingface adapter (spec R4). 'auto' could route it elsewhere.
+  useEffect(() => {
+    if (isHf && adapter !== 'huggingface') setAdapter('huggingface')
+  }, [isHf, adapter])
+
+  // Name-based checks from the gateway, debounced while the user types (spec R11-R13).
+  useEffect(() => {
+    if (!isHf) {
+      setHfCheck(null)
+      return
+    }
+    const timer = setTimeout(() => {
+      api
+        .post<HfCheck>('/api/models/hf-check', { uri: uri.trim(), task: entrypoint.trim() || hfTask })
+        .then((result) => setHfCheck(result))
+        .catch(() => setHfCheck(null))
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [isHf, uri, hfTask, entrypoint])
+
+  const applyHfTask = (task: string) => {
+    const preset = HF_TASKS.find((item) => item.task === task)
+    if (!preset) return
+    setHfTask(task)
+    setEntrypoint(task)
+    setSchemaIn(JSON.stringify(preset.input, null, 2))
+    setSchemaOut(JSON.stringify(preset.output, null, 2))
+    setWarmup(preset.warmup ? JSON.stringify(preset.warmup, null, 2) : '')
+    setAdapter('huggingface')
+  }
+
   const register = async () => {
     if (!name.trim() || !uri.trim()) {
       setError('name and artifact URI are both required')
+      return
+    }
+    if (isHf && hfCheck && !hfCheck.ok) {
+      setError(hfCheck.blockers.join(' '))
       return
     }
     const parsedIn = parseJsonField(schemaIn)
@@ -261,6 +409,50 @@ export default function ModelsPage() {
             </label>
           )}
 
+          {isHf ? (
+            <div className="card" style={{ margin: '12px 0', padding: 12 }}>
+              <div className="grid cols-2">
+                <label className="field">
+                  <span>Task</span>
+                  <select value={hfTask} onChange={(event) => applyHfTask(event.target.value)}>
+                    {HF_TASKS.map((preset) => (
+                      <option key={preset.task} value={preset.task}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="hint">Fills the entrypoint, schemas and warm-up sample. You can still edit them below.</div>
+                </label>
+                <div className="field">
+                  <span>Model check</span>
+                  {hfCheck ? (
+                    <div>
+                      <div className="hint mono">
+                        {hfCheck.repo}
+                        {hfCheck.filename ? ` / ${hfCheck.filename}` : ''}
+                      </div>
+                      {hfCheck.blockers.map((message) => (
+                        <Banner key={message} tone="red">{message}</Banner>
+                      ))}
+                      {hfCheck.warnings.map((message) => (
+                        <Banner key={message} tone="amber">{message}</Banner>
+                      ))}
+                      {hfCheck.ok && hfCheck.warnings.length === 0 ? (
+                        <div className="hint">No issues found by name. The runtime still checks the repo when it loads.</div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="hint">Checking…</div>
+                  )}
+                </div>
+              </div>
+              {hfPreset.note ? <div className="hint" style={{ marginTop: 8 }}>{hfPreset.note}</div> : null}
+              <div className="hint" style={{ marginTop: 8 }}>
+                The name check does not contact Hugging Face. A missing or private repo is reported when the runtime loads it.
+              </div>
+            </div>
+          ) : null}
+
           <div className="grid cols-3">
             <label className="field">
               <span>Name</span>
@@ -274,7 +466,7 @@ export default function ModelsPage() {
             </label>
             <label className="field">
               <span>Adapter</span>
-              <select value={adapter} onChange={(event) => setAdapter(event.target.value)}>
+              <select value={adapter} disabled={isHf} onChange={(event) => setAdapter(event.target.value)}>
                 {['auto', 'sklearn', 'pytorch', 'onnx', 'xgboost', 'keras', 'huggingface', 'python_function', 'echo'].map(
                   (kind) => (
                     <option key={kind} value={kind}>
@@ -284,7 +476,13 @@ export default function ModelsPage() {
                 )}
               </select>
               <div className="hint">
-                <code className="mono">python_function</code> + entrypoint is the escape hatch for anything custom.
+                {isHf ? (
+                  <>Fixed to <code className="mono">huggingface</code> for Hub models.</>
+                ) : (
+                  <>
+                    <code className="mono">python_function</code> + entrypoint is the escape hatch for anything custom.
+                  </>
+                )}
               </div>
             </label>
           </div>
