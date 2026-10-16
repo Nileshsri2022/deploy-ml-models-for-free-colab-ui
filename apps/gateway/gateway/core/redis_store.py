@@ -38,6 +38,7 @@ agent's VM). This store only carries the registry metadata.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
@@ -54,6 +55,50 @@ logger = logging.getLogger("gateway.registry")
 
 _META_SUFFIX = ":__meta__"
 
+#: Reconnect at most this often when Redis is *unreachable* (seconds). The
+#: backoff deliberately applies to failures only: a healthy client is cached
+#: and reused, never re-negotiated.
+CONNECT_BACKOFF_S = 30.0
+
+#: Schemes ``redis.Redis.from_url`` understands (without the ``://``). Anything
+#: else — notably Upstash's *REST* endpoint, ``https://…upstash.io`` — can never
+#: connect, and saying so up front beats a generic "not connected".
+_REDIS_SCHEMES = ("redis", "rediss", "unix")
+
+
+def describe_url(url: str) -> dict[str, Any]:
+    """Sanity-check a ``CDP_REDIS_URL`` without touching the network.
+
+    Returns ``{"scheme_ok": bool, "host": str, "problem": str}``. ``problem`` is
+    empty when the URL is at least plausible, so the UI can name the actual
+    mistake (a pasted REST URL, an untrimmed quote, a copy of the Read-only
+    replica) instead of blaming env vars that are set correctly.
+    """
+    raw = (url or "").strip()
+    out: dict[str, Any] = {"scheme_ok": False, "host": "", "problem": ""}
+    if not raw:
+        out["problem"] = "CDP_REDIS_URL is empty in this process's environment"
+        return out
+    if raw[0] in "\"'" or raw[-1] in "\"'":
+        out["problem"] = "CDP_REDIS_URL is wrapped in quote characters"
+        return out
+    scheme, sep, rest = raw.partition("://")
+    if not sep:
+        out["problem"] = "CDP_REDIS_URL is not a URL (expected rediss://user:pass@host:port)"
+        return out
+    out["scheme_ok"] = scheme.strip().lower() in _REDIS_SCHEMES
+    out["host"] = rest.rpartition("@")[2].split("/")[0]
+    if not out["scheme_ok"]:
+        hint = (
+            " — Upstash's REST/HTTPS endpoint is not a Redis URL"
+            if scheme.lower().startswith("http")
+            else ""
+        )
+        out["problem"] = f"unsupported scheme '{scheme}:'{hint}"
+    elif "upstash" in out["host"] and scheme.strip().lower() == "redis":
+        out["problem"] = "Upstash requires TLS: use the rediss:// URL, not redis://"
+    return out
+
 
 class RedisSnapshotStore(JsonStore):
     """``JsonStore`` with a per-record Redis mirror and boot-time restore."""
@@ -66,6 +111,7 @@ class RedisSnapshotStore(JsonStore):
         namespace: str = "cdp:registry:v1",
         sync_interval_s: float = 30.0,
         keepalive_s: float = 86400.0,
+        connect_backoff_s: float = CONNECT_BACKOFF_S,
         client: Any | None = None,
         event_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
     ) -> None:
@@ -73,17 +119,26 @@ class RedisSnapshotStore(JsonStore):
         self.namespace = namespace.rstrip(":")
         self.sync_interval_s = max(0.0, float(sync_interval_s))
         self.keepalive_s = max(0.0, float(keepalive_s))
-        self._url = redis_url
+        self.connect_backoff_s = max(0.0, float(connect_backoff_s))
+        self._url = (redis_url or "").strip().strip("\"'")
         self._injected = client is not None
         self._client: Any | None = client
         self._event_callback = event_callback
         self._last_connect_attempt = -60.0  # allow the first attempt immediately
         self._connect_warned = False
-        self._ever_connected = False
-        self._connected = False
-        self._last_error: str | None = None
+        self._ever_connected = client is not None
+        self._connected = client is not None
+        self._last_error = ""
         self._last_error_at: str | None = None
         self._last_success_at: str | None = None
+        self._connect_guard = threading.Lock()
+        self.restored_at_boot = 0
+        url_state = describe_url(self._url)
+        self._url_problem = url_state["problem"]
+        self.url_ok = bool(self._url) and url_state["scheme_ok"] and not self._url_problem
+        if self._url_problem:
+            self._last_error = self._url_problem
+            logger.warning("registry mirror disabled: %s", self._last_error)
 
         # (collection, key) -> monotonic sequence number, for "set" or "del".
         self._dirty: dict[tuple[str, str], str] = {}
@@ -94,47 +149,73 @@ class RedisSnapshotStore(JsonStore):
         self._closing = False
         self._last_keepalive = time.monotonic()
 
-        if self.sync_interval_s > 0:
-            self._flusher = threading.Thread(
-                target=self._flusher_loop, name="cdp-redis-sync", daemon=True
-            )
-            self._flusher.start()
+        # Always started: in coalescing mode it is the syncer, in write-through
+        # mode it is the catch-up retry for a flush that failed inline.
+        self._flusher = threading.Thread(
+            target=self._flusher_loop, name="cdp-redis-sync", daemon=True
+        )
+        self._flusher.start()
 
     # ------------------------------------------------------------------ #
     # Redis client management
     # ------------------------------------------------------------------ #
     def _ensure_client(self) -> Any | None:
-        """Return a connected client, (re)connecting at most every 30 s."""
-        if self._client is not None:
-            return self._client
-        if not self._url:
-            return None
-        now = time.monotonic()
-        if not self._injected and now - self._last_connect_attempt < 30.0:
-            return None
-        self._last_connect_attempt = now
-        try:
-            import redis  # optional dependency: pip install 'colabdeploy-gateway[redis]'
+        """Return the shared Redis client, connecting (or retrying) as needed.
 
-            client = redis.Redis.from_url(
-                self._url,
-                decode_responses=True,
-                socket_connect_timeout=5,
-                socket_timeout=5,
-            )
-            client.ping()
-        except Exception as exc:  # any failure degrades to file-only
-            self._record_failure("connect", exc)
-            return None
+        Two rules make the difference between a working mirror and a silent
+        "not connected":
 
-        self._client = client
-        self._record_success()
-        self._ever_connected = True
-        return client
+        * the client is **cached** on ``self._client``. Opening a fresh socket
+          per call leaked connections until Upstash refused more (its free tier
+          caps concurrent clients), and it left ``self._client`` ``None``
+          forever, which disabled the keepalive write;
+        * the backoff applies to **failed** attempts only. Throttling every
+          attempt made the 30 s background syncer eat the connect window, so
+          the boot restore only rebuilt the first collection and the UI
+          inspector reported "not connected" for the rest.
+        """
+        client = self._client
+        if client is not None:
+            return client
+        if not self._url or not self.url_ok:
+            return None
+        with self._connect_guard:
+            if self._client is not None:  # another thread connected while we waited
+                return self._client
+            now = time.monotonic()
+            if not self._injected and now - self._last_connect_attempt < self.connect_backoff_s:
+                return None  # unreachable a moment ago: retry on the next window
+            self._last_connect_attempt = now
+            try:
+                import redis  # optional dependency: pip install 'colabdeploy-gateway[redis]'
+
+                client = redis.Redis.from_url(
+                    self._url,
+                    decode_responses=True,
+                    socket_connect_timeout=5,
+                    socket_timeout=5,
+                    # Reap a connection Render's NAT quietly killed, so the first
+                    # write after an idle period is not the one that fails.
+                    health_check_interval=30,
+                )
+                client.ping()
+            except Exception as exc:  # any failure degrades to file-only
+                self._record_failure("connect", exc)
+                return None
+            self._client = client
+            self._record_success()
+            return client
 
     def _drop_client(self, exc: Exception, *, operation: str = "sync") -> None:
+        """Retire a failed client and report one sanitized event per outage."""
+        stale = self._client
         if not self._injected:
             self._client = None
+            if stale is not None:
+                with contextlib.suppress(Exception):  # a broken socket is expected here
+                    stale.close()
+            # Back off from now on, so a dead Redis is not re-probed per request.
+            self._last_connect_attempt = time.monotonic()
         self._record_failure(operation, exc)
 
     def _record_failure(self, operation: str, exc: Exception) -> None:
@@ -162,8 +243,9 @@ class RedisSnapshotStore(JsonStore):
         recovered = self._connect_warned
         first_connection = not self._ever_connected
         self._connected = True
+        self._ever_connected = True
         self._last_success_at = datetime.now(timezone.utc).isoformat()
-        self._last_error = None
+        self._last_error = ""
         self._last_error_at = None
         self._connect_warned = False
         if recovered or first_connection:
@@ -265,6 +347,7 @@ class RedisSnapshotStore(JsonStore):
             if data is not None:
                 self._cache[name] = data
                 restored += 1
+        self.restored_at_boot = restored
         return restored
 
     def _restore(self, collection: str) -> dict[str, Any] | None:
@@ -329,19 +412,38 @@ class RedisSnapshotStore(JsonStore):
 
         The wakeup event shortens the sleep only for shutdown; mutation bursts
         never trigger an early sync (the disk copy is the immediate one).
+
+        In write-through mode (``sync_interval_s == 0``) every mutation flushes
+        inline instead, and this thread has one job left: catch up on keys a
+        failed inline flush queued, which nothing else would ever retry.
         """
-        next_sync = time.monotonic() + self.sync_interval_s
+        write_through = self.sync_interval_s <= 0
+        period = self.connect_backoff_s if write_through else self.sync_interval_s
+        next_sync = time.monotonic() + period
         while not self._closing:
             remaining = max(0.0, next_sync - time.monotonic())
             self._wakeup.wait(remaining)
             self._wakeup.clear()
             if self._closing:
                 break
-            if time.monotonic() < next_sync:
-                continue  # woken early: stay on schedule
+            if not write_through:
+                if time.monotonic() < next_sync:
+                    # Woken by a mutation. `next_sync` is deliberately left
+                    # alone: rescheduling on every heartbeat would starve the
+                    # sync forever under a steady write stream.
+                    continue
+            elif not self._has_pending():
+                # In write-through mode a mutation flushes inline, so an early
+                # wakeup with an empty queue is the normal case: re-arm.
+                next_sync = time.monotonic() + period
+                continue
             self._sync_once()
             self._maybe_keepalive()
-            next_sync = time.monotonic() + self.sync_interval_s
+            next_sync = time.monotonic() + period
+
+    def _has_pending(self) -> bool:
+        with self._dirty_guard:
+            return bool(self._dirty)
 
     def _maybe_keepalive(self) -> None:
         """Keep free tiers that archive idle databases (Upstash) awake."""
@@ -352,6 +454,7 @@ class RedisSnapshotStore(JsonStore):
         self._last_keepalive = time.monotonic()
         try:
             self._client.set(f"{self.namespace}:__keepalive__", str(int(time.time())))
+            self._record_success()
         except Exception as exc:  # retry on the next cycle
             self._drop_client(exc, operation="keepalive")
 
@@ -405,13 +508,18 @@ class RedisSnapshotStore(JsonStore):
 
     # ------------------------------------------------------------------ #
     def close(self) -> None:
-        """Flush pending mirror writes and stop the sync thread."""
+        """Flush pending mirror writes, stop the sync thread, release the socket."""
         self._closing = True
         self._wakeup.set()
         thread = self.__dict__.get("_flusher")
         if thread is not None and thread.is_alive():
             thread.join(timeout=5)
         self._sync_once()
+        if not self._injected:
+            client, self._client = self._client, None
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    client.close()
 
     def _health_status(self) -> dict[str, Any]:
         return {
@@ -428,6 +536,98 @@ class RedisSnapshotStore(JsonStore):
             counts = {"pending": len(self._dirty), "collections": len(self._cache)}
         return {**counts, **self._health_status()}
 
+    def reconnect(self) -> dict[str, Any]:
+        """Drop the backoff and try to connect now (the UI's retry button).
+
+        Without this a user who just woke an archived Upstash database has to
+        wait out the 30 s window before the panel admits Redis is reachable.
+        """
+        self._last_connect_attempt = -60.0
+        client = self._ensure_client()
+        if client is not None:
+            self._sync_once()
+        return self.status()
+
+    def flush(self) -> dict[str, Any]:
+        """Push the queued mirror writes now, and say honestly whether they landed.
+
+        A sync that no-ops because Redis is unreachable must not be reported as
+        "synced" — that is the difference between a UI that lies and one that
+        points at the failing hop.
+        """
+        before = self.sync_stats()["pending"]
+        client = self._ensure_client()
+        if client is None:
+            status = self.status()
+            status["message"], status["hint"] = mirror_advice(status)
+            return {
+                "synced": False,
+                "reason": status.get("reason") or status.get("state") or "unreachable",
+                "message": status.get("message") or "",
+                "hint": status.get("hint") or "",
+                "stats": {"pending": before, "collections": len(self._cache)},
+            }
+        self._sync_once()
+        after = self.sync_stats()["pending"]
+        view = self.inspect(limit=1)
+        if after > 0:
+            status = self.status()
+            if status["connected"]:
+                reason = "pending"
+                message = "Some registry writes remain queued after the flush."
+                hint = "Try Sync again after the current write burst settles."
+            else:
+                reason = status.get("reason") or status.get("state") or "unreachable"
+                message, hint = mirror_advice(status)
+            return {
+                "synced": False,
+                "reason": reason,
+                "message": message,
+                "hint": hint,
+                "stats": {"pending": after, "collections": len(self._cache)},
+                "view": view,
+            }
+        return {
+            "synced": True,
+            "pushed": max(0, before - after),
+            "stats": {"pending": after, "collections": len(self._cache)},
+            "view": view,
+        }
+
+    def status(self) -> dict[str, Any]:
+        """Mirror health, without a Redis round-trip (safe to call per request)."""
+        connected = self._connected
+        retry_in = 0.0
+        if not connected and self._url:
+            wait = self.connect_backoff_s - (time.monotonic() - self._last_connect_attempt)
+            retry_in = round(max(0.0, wait), 1)
+        state = "connected" if connected else ("backoff" if retry_in > 0 else "retry")
+        if not self._url:
+            state = "disabled"
+        elif self._url_problem:
+            state = "invalid_url"
+        elif self._last_error and not connected:
+            state = "unreachable"
+        return {
+            "backend": "upstash",
+            "enabled": True,
+            "configured": bool(self._url),
+            **self._health_status(),
+            "connected": connected,
+            "state": state,
+            "reason": "bad_url"
+            if self._url_problem
+            else ("" if connected else classify_error(self._last_error)),
+            "url_ok": self.url_ok,
+            "namespace": self.namespace,
+            "host": describe_url(self._url)["host"] if self._url else "",
+            "sync_interval_s": self.sync_interval_s,
+            "keepalive_s": self.keepalive_s,
+            "pending": self.sync_stats()["pending"],
+            "restored": int(getattr(self, "restored_at_boot", 0)),
+            "retry_in_s": retry_in,
+        }
+
     # ------------------------------------------------------------------ #
     # Upstash inspector (what the UI Cache page shows)
     # ------------------------------------------------------------------ #
@@ -435,15 +635,22 @@ class RedisSnapshotStore(JsonStore):
         """List live Redis keys. This is the Upstash view — not the inference cache."""
         client = self._ensure_client()
         empty: dict[str, Any] = {
+            "connected": False,
             "backend": "upstash",
             "namespace": self.namespace,
             "entries": 0,
             "size_bytes": 0,
+            "pending": self.sync_stats()["pending"],
             "keys": [],
             "collections": {},
-            **self.sync_stats(),
         }
         if client is None:
+            # "not connected" is only useful with a reason attached: the URL may
+            # be fine and the network/TLS/Upstash-restore the actual problem.
+            status = self.status()
+            empty.update(status)
+            empty["connected"] = False  # a cached client must never claim "up" here
+            empty["message"], empty["hint"] = mirror_advice(status)
             return empty
         try:
             pattern = f"{self.namespace}:{collection}:*" if collection else f"{self.namespace}:*"
@@ -501,18 +708,24 @@ class RedisSnapshotStore(JsonStore):
                 )
             self._record_success()
             return {
-                "backend": "upstash",
-                "namespace": self.namespace,
+                **self.status(),
+                "connected": True,
+                "message": "",
+                "hint": "",
                 "entries": len(redis_keys),
                 "shown": len(keys_out),
                 "size_bytes": total_bytes,
                 "keys": keys_out,
                 "collections": collections,
-                **self.sync_stats(),
             }
         except Exception as exc:
+            # A Redis error mid-scan is a connection-state event, so report it
+            # as one: drop the client, refresh the diagnostics, keep the shape.
             self._drop_client(exc, operation="inspect")
-            empty.update(self._health_status())
+            status = self.status()
+            empty.update(status)
+            empty["connected"] = False
+            empty["message"], empty["hint"] = mirror_advice(status)
             empty["error"] = self._last_error
             return empty
 
@@ -550,6 +763,169 @@ class RedisSnapshotStore(JsonStore):
             return False
 
 
+#: Actionable text per failure mode, so the Cache page can say what to do
+#: instead of "set the variables you already set". ``reason`` is the stable id
+#: (tests and docs reference it); ``message`` is the one-liner; ``hint`` the fix.
+_MIRROR_ADVICE: dict[str, tuple[str, str]] = {
+    "no_url": (
+        "This gateway process has no CDP_REDIS_URL in its environment.",
+        "On Render a secret added after the first deploy is only injected on the *next* "
+        "deploy: Environment → Add Secret Value, then Manual Deploy → 'Clear cache & "
+        "deploy'. render.yaml declares CDP_REDIS_URL with sync:false, so it is never "
+        "pre-filled.",
+    ),
+    "bad_url": (
+        "CDP_REDIS_URL is not a Redis connection URL.",
+        "Use the 'Redis URL' from Upstash (rediss://default:<token>@host.upstash.io:6379). "
+        "The 'REST URL' (https://…) is a different API and the read-only replica cannot be "
+        "written to. Strip any quote characters Render may have kept around the value.",
+    ),
+    "library_missing": (
+        "The gateway image has no 'redis' Python client, so the mirror cannot start.",
+        "The Dockerfile installs './apps/gateway[redis]'. A custom Build/Start command that "
+        "runs plain 'pip install -e ./apps/gateway' or a bare requirements.txt drops the "
+        "extra — add redis>=5.0 there.",
+    ),
+    "backend_file": (
+        "CDP_REGISTRY_BACKEND is not 'redis' (the registry lives on this container's disk only).",
+        "Set CDP_REGISTRY_BACKEND=redis. Note it is read once at process start: restart the "
+        "service after changing any CDP_* variable.",
+    ),
+    "tls": (
+        "Redis answered, but the TLS handshake failed.",
+        "Upstash only accepts rediss:// on port 6379. If your egress path terminates TLS, "
+        "append ?ssl_cert_reqs=none to the URL.",
+    ),
+    "dns": (
+        "The gateway cannot resolve the Redis host.",
+        "Check the hostname and that the service has outbound DNS: Upstash hosts live in "
+        "the region you picked (…upstash.io).",
+    ),
+    "timeout": (
+        "The TCP connect to Redis timed out.",
+        "Free-tier hosts can block outbound 6379. Test from the same region, or fall back to "
+        "disk-only persistence (leave CDP_REDIS_URL empty) and re-attach the runtime after a recycle.",
+    ),
+    "auth": (
+        "Redis rejected the credentials.",
+        "Upstash expects the user 'default' and the token after the ':' as the password. "
+        "Regenerate the token in the Upstash console if it was rotated.",
+    ),
+    "max_clients": (
+        "Upstash refused the connection: too many clients.",
+        "The free tier caps concurrent connections. Restart the gateway (or delete idle "
+        "connections in the Upstash console) — the mirror now reuses a single pooled client.",
+    ),
+    "restored": (
+        "Upstash is bringing the database back online.",
+        "Idle free databases are archived and take ~1 min to restore. Open the Upstash "
+        "console once, then press 'Reconnect now'.",
+    ),
+    "backoff": (
+        "Redis was unreachable a moment ago; the gateway retries in the background.",
+        "Press 'Reconnect now' after you fixed the URL or woke the database, instead of "
+        "waiting out the 30 s backoff.",
+    ),
+    "init_failed": (
+        "The mirror could not be built in this gateway process.",
+        "The gateway log has the exception. The usual cause is a mismatched 'redis' client "
+        "version — pin redis>=5.0 and redeploy.",
+    ),
+    "unknown": (
+        "Redis is configured but not answering.",
+        "Look for a 'registry mirror: Redis unreachable' line in the gateway logs "
+        "(Logs page, or Render → Events) — it carries the exact client error.",
+    ),
+}
+
+#: Substrings that identify a client error without importing the redis package.
+_ERROR_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "max_clients",
+        ("max number of clients", "too many connections", "mcrouter", "maximum number of clients"),
+    ),
+    ("restored", ("restored", "archived", "is not running", "loading dataset")),
+    (
+        "auth",
+        ("authentication", "invalid password", "noauth", "wrongpass", "invalid username-password"),
+    ),
+    ("tls", ("ssl", "tls", "certificate", "handshake", "unknown scheme")),
+    (
+        "dns",
+        (
+            "name or service not known",
+            "getaddrinfo",
+            "nodename nor servname",
+            "temporary failure in name resolution",
+        ),
+    ),
+    (
+        "timeout",
+        ("timed out", "timeout", "connection refused", "unreachable", "network is unreachable"),
+    ),
+)
+
+
+def classify_error(last_error: str) -> str:
+    """Map a redis-py exception string onto one of ``_MIRROR_ADVICE``."""
+    blob = (last_error or "").lower()
+    if not blob:
+        return "unknown"
+    for reason, needles in _ERROR_SIGNATURES:
+        if any(needle in blob for needle in needles):
+            return reason
+    return "unknown"
+
+
+def mirror_advice(status: dict[str, Any]) -> tuple[str, str]:
+    """``(message, hint)`` for the Cache page banner, from a status payload."""
+    reason = status.get("reason") or ""
+    if not reason:
+        if not status.get("configured"):
+            reason = "no_url"
+        elif not status.get("url_ok", True):
+            reason = "bad_url"
+        elif status.get("state") == "backoff":
+            reason = "backoff"
+        else:
+            reason = classify_error(status.get("last_error", ""))
+    return _MIRROR_ADVICE.get(reason, _MIRROR_ADVICE["unknown"])
+
+
+def registry_status(store: JsonStore, settings: Any) -> dict[str, Any]:
+    """Health of the registry mirror, for /api/upstash/* and /healthz.
+
+    Works for both stores: a :class:`RedisSnapshotStore` reports its live
+    connection state, a fallback ``JsonStore`` reports *why* the mirror was
+    disabled at boot (``reason`` is recorded by :func:`build_registry_store`).
+    """
+    if isinstance(store, RedisSnapshotStore):
+        out = store.status()
+        out["message"], out["hint"] = mirror_advice(out) if not out["connected"] else ("", "")
+        return out
+    backend = (getattr(settings, "registry_backend", "file") or "file").strip().lower()
+    url = (getattr(settings, "redis_url", "") or "").strip()
+    reason = getattr(store, "registry_reason", "") or (
+        "backend_file" if backend != "redis" else "no_url"
+    )
+    out = {
+        "backend": "upstash" if backend == "redis" else "file",
+        "enabled": backend == "redis",
+        "configured": bool(url),
+        "connected": False,
+        "state": "disabled",
+        "reason": reason,
+        "namespace": "cdp:registry:v1",
+        "host": describe_url(url)["host"],
+        "url_ok": describe_url(url)["scheme_ok"] if url else False,
+        "pending": 0,
+        "last_error": getattr(store, "registry_note", ""),
+        "retry_in_s": 0.0,
+    }
+    out["message"], out["hint"] = mirror_advice(out)
+    return out
+
+
 def _report_factory_issue(
     message: str,
     reason: str,
@@ -557,6 +933,7 @@ def _report_factory_issue(
     event_callback: Callable[[str, str, dict[str, Any]], None] | None,
     operation: str,
 ) -> None:
+    """Log and report a sanitized mirror setup failure through normal channels."""
     safe_reason = scrub_sensitive_text(reason)[:500]
     logger.warning("%s (%s)", message, safe_reason)
     if event_callback is not None:
@@ -575,6 +952,14 @@ def _report_factory_issue(
     )
 
 
+def _fallback_store(settings: Any, reason: str, note: str) -> JsonStore:
+    """A plain file store that remembers why the mirror was skipped."""
+    store = JsonStore(settings.data_dir / "store")
+    store.registry_reason = reason  # type: ignore[attr-defined]
+    store.registry_note = scrub_sensitive_text(note)[:500]  # type: ignore[attr-defined]
+    return store
+
+
 def build_registry_store(
     settings: Any,
     *,
@@ -583,8 +968,9 @@ def build_registry_store(
     """Factory used by the app container: file store, or Redis-mirrored store.
 
     Never raises: if the ``redis`` package is missing or the URL is empty the
-    gateway falls back to the plain file store with a warning, which is the
-    pre-Redis behaviour.
+    gateway falls back to the plain file store. Every fallback records a stable
+    reason for the Cache page and reports one sanitized diagnostic to app logs
+    and Sentry when configured.
     """
     backend = (getattr(settings, "registry_backend", "file") or "file").strip().lower()
     url = (getattr(settings, "redis_url", "") or "").strip()
@@ -592,11 +978,12 @@ def build_registry_store(
         if backend == "redis":
             _report_factory_issue(
                 "CDP_REGISTRY_BACKEND=redis but CDP_REDIS_URL is empty; using local JSON",
-                "Redis URL is not configured",
+                "CDP_REDIS_URL is empty",
                 event_callback=event_callback,
                 operation="configuration",
             )
-        return JsonStore(settings.data_dir / "store")
+            return _fallback_store(settings, "no_url", "CDP_REDIS_URL is empty")
+        return _fallback_store(settings, "backend_file", "CDP_REGISTRY_BACKEND=file")
     try:
         import redis  # noqa: F401 - optional dependency, probed up front
     except ImportError:
@@ -606,13 +993,27 @@ def build_registry_store(
             event_callback=event_callback,
             operation="configuration",
         )
-        return JsonStore(settings.data_dir / "store")
+        return _fallback_store(
+            settings, "library_missing", "the 'redis' python package is not installed"
+        )
+    problem = describe_url(url)["problem"]
+    if problem:
+        _report_factory_issue(
+            "CDP_REDIS_URL is invalid; using local JSON",
+            problem,
+            event_callback=event_callback,
+            operation="configuration",
+        )
+        return _fallback_store(settings, "bad_url", problem)
     try:
         return RedisSnapshotStore(
             settings.data_dir / "store",
             redis_url=url,
             sync_interval_s=float(getattr(settings, "registry_sync_s", 30.0)),
             keepalive_s=float(getattr(settings, "registry_keepalive_s", 86400.0)),
+            connect_backoff_s=float(
+                getattr(settings, "registry_connect_backoff_s", CONNECT_BACKOFF_S)
+            ),
             event_callback=event_callback,
         )
     except Exception as exc:  # a mirror must never block boot
@@ -622,4 +1023,4 @@ def build_registry_store(
             event_callback=event_callback,
             operation="initialize",
         )
-        return JsonStore(settings.data_dir / "store")
+        return _fallback_store(settings, "init_failed", f"{type(exc).__name__}: {exc}")

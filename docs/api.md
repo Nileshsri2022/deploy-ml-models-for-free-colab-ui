@@ -298,6 +298,21 @@ reconciles against desired state the moment it re-attaches.
 
 The cache key is `hash(endpoint_id, model_version, canonical_json(payload))`.
 
+### Upstash (the registry mirror, not the cache)
+
+Prediction responses stay in the local cache above; these routes are about the
+*registry* mirror that lets models, endpoints, keys and runtime history survive
+a free-tier disk wipe. When the UI says "not connected", `status` is the call
+that says why.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/upstash/status` | `state` (`connected`/`retry`/`backoff`/`unreachable`/`invalid_url`/`disabled`), `reason`, `last_error`, `host`, `pending`, `restored` — never touches Redis, safe to poll |
+| `POST /api/upstash/reconnect` | clear the reconnect backoff, connect and flush now (the UI's ⚡ Reconnect) |
+| `GET /api/upstash/keys?limit=&collection=` | the live Redis keys the Cache page lists; on a gateway with no mirror it returns the same zeroed view **plus** the `reason`/`message`/`hint` |
+| `GET /api/upstash/key?key=` · `DELETE /api/upstash/key?key=` | read one key / drop it (Redis only — the local file is untouched) |
+| `POST /api/upstash/sync` | flush queued writes now. `synced: false` comes with the reason, never a silent success |
+
 ### Observability
 
 | Route | Purpose |

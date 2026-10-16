@@ -1040,3 +1040,62 @@ def test_deploy_with_an_unknown_model_or_runtime(api: Any) -> None:
     bad = api.post("/api/deploy", json={"model_id": first["model"]["id"], "runtime_id": "rt_nope"})
     assert bad.status_code == 400
     assert "runtime" in bad.json()["error"]["message"]
+
+
+# --------------------------------------------------------------------------- #
+# Upstash mirror diagnostics (the Cache page)
+# --------------------------------------------------------------------------- #
+def test_upstash_endpoints_explain_a_missing_mirror(api: Any) -> None:
+    """The default test gateway has no Redis configured.
+
+    The banner used to claim "set CDP_REGISTRY_BACKEND and CDP_REDIS_URL" for a
+    gateway whose variables *are* set, because the fallback carried no reason.
+    Every Upstash route must now say which of the four mistakes it is.
+    """
+    view = api.get("/api/upstash/keys").json()
+    assert view["connected"] is False
+    assert view["reason"] == "backend_file"
+    assert "CDP_REGISTRY_BACKEND" in view["message"]
+    assert view["hint"] and view["entries"] == 0 and view["keys"] == []
+
+    status = api.get("/api/upstash/status").json()
+    assert status["state"] == "disabled" and status["enabled"] is False
+
+    sync = api.post("/api/upstash/sync").json()
+    assert sync["synced"] is False and sync["reason"] == "backend_file"
+
+    assert api.get("/api/upstash/key", params={"key": "x"}).status_code == 404
+    assert api.delete("/api/upstash/key", params={"key": "x"}).status_code == 404
+
+
+def test_reconnect_reports_the_gateway_cannot_be_asked(api: Any) -> None:
+    """Reconnect on a file-store gateway: honest, not an error."""
+    response = api.post("/api/upstash/reconnect")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["connected"] is False and body["reason"] == "backend_file"
+
+
+def test_healthz_carries_the_registry_state(api: Any) -> None:
+    """`curl /healthz` should be enough to triage a mirror without the UI."""
+    registry = api.client.get("/healthz").json()["registry"]
+    assert registry["backend"] == "file"
+    assert registry["connected"] is False
+    assert registry["reason"] == "backend_file"
+
+
+def test_healthz_reports_a_live_mirror(api: Any, state: Any, monkeypatch: Any) -> None:
+    """With a mirror in place the same field flips to connected (no network)."""
+    fakeredis = pytest.importorskip("fakeredis")
+    from gateway.core.redis_store import RedisSnapshotStore
+
+    store = RedisSnapshotStore(
+        state.settings.data_dir / "store",
+        redis_url="rediss://default:t@db.upstash.io:6379",
+        sync_interval_s=3600.0,
+        client=fakeredis.FakeRedis(server=fakeredis.FakeServer(), decode_responses=True),
+    )
+    monkeypatch.setattr(state, "store", store)
+    registry = api.client.get("/healthz").json()["registry"]
+    assert registry["connected"] is True and registry["backend"] == "upstash"
+    store.close()
