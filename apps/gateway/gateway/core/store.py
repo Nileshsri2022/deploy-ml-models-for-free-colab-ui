@@ -148,3 +148,6 @@ class JsonStore:
 
     def collections(self) -> list[str]:
         return sorted({p.stem for p in self.root.glob("*.json")})
+
+    def close(self) -> None:
+        """Release background workers; the base store is synchronous, so a no-op."""
