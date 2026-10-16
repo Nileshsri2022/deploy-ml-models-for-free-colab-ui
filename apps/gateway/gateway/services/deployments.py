@@ -23,6 +23,7 @@ from colabdeploy_shared.enums import (
     EndpointVisibility,
     RuntimeState,
 )
+from colabdeploy_shared.hf import check_hf_uri, is_hf_uri
 from colabdeploy_shared.schemas import (
     ArtifactSpec,
     DeploymentInfo,
@@ -163,6 +164,11 @@ class DeploymentService:
     # ------------------------------------------------------------------ #
     def register_model(self, create: ModelCreate, owner: str = "default") -> ModelInfo:
         adapter, reason = detect_adapter(create)
+        if adapter == AdapterKind.HUGGINGFACE and is_hf_uri(create.artifact.uri):
+            # Spec 6.3: block what cannot work before the model is stored.
+            check = check_hf_uri(create.artifact.uri, create.entrypoint)
+            if check.blockers:
+                raise ValueError(" ".join(check.blockers))
         version = self.registry.models.latest_version(create.name) + 1
         model = ModelInfo(
             id=short_id("mdl", 8),

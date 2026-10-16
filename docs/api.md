@@ -188,6 +188,7 @@ Runtime states: `registered → connecting → online → stale → offline`, pl
 | Route | Purpose |
 | --- | --- |
 | `POST /api/models` | register by artifact URI (`ModelCreate`) |
+| `POST /api/models/hf-check` | name-based checks for a Hub URI: `{uri, task?}` → `{repo, filename, task, ok, blockers[], warnings[]}`. Does not contact the Hub. Registration of an `hf://` model returns `400` when there are blockers (GGUF, diffusion pipelines, unsupported task). |
 | `POST /api/models/upload` | multipart upload: `file`, `name`, `framework`, `adapter`, `schema_in`, `schema_out`, `warmup_sample`, `entrypoint`, `tags` — stored and served back to agents as `store://art_<id>` |
 | `GET /api/models` | `{count, models[], latest[]}` — `latest` is one row per model name |
 | `GET /api/models/{id}` | includes `all_versions` and the endpoints using it |
